@@ -1,49 +1,50 @@
-"""Backward-compatible writer facade.
+from __future__ import annotations
 
-New code should import bundle writers from :mod:`specforge.renderers`.
-"""
-
-from specforge.renderers.markdown import (
-    render_api_calls,
+from specforge.renderers.backend import (
     render_api_contracts,
     render_api_links,
     render_api_routes,
-    render_architecture,
-    render_assets,
     render_backend,
-    render_commands,
-    render_components,
     render_data_layer,
     render_data_models,
-    render_dependencies,
-    render_entrypoints,
-    render_evidence,
+    render_java_web,
+    render_jsp_pages,
+    render_servlets,
+    render_spring,
+)
+from specforge.renderers.bundle import write_fact_bundle, write_spec_bundle
+from specforge.renderers.frontend import (
+    render_api_calls,
+    render_assets,
+    render_components,
     render_forms,
-    render_frameworks,
     render_frontend,
     render_frontend_map,
     render_frontend_routes,
-    render_gaps,
-    render_implementation_guide,
-    render_imports,
-    render_inventory,
-    render_java_web,
-    render_jsp_pages,
-    render_llm_handoff,
-    render_modules,
-    render_overview,
     render_pages,
-    render_servlets,
-    render_spring,
     render_state,
     render_styles,
+)
+from specforge.renderers.implementation import render_implementation_guide, render_llm_handoff
+from specforge.renderers.overview import (
+    render_architecture,
+    render_dependencies,
+    render_frameworks,
+    render_imports,
+    render_inventory,
+    render_modules,
+    render_overview,
     render_summary,
     render_symbols,
+)
+from specforge.renderers.supporting import (
+    render_commands,
+    render_entrypoints,
+    render_evidence,
+    render_gaps,
+    render_runtime_config,
     render_test_map,
     render_tests,
-    render_runtime_config,
-    write_fact_bundle,
-    write_spec_bundle,
 )
 
 __all__ = [

@@ -6,9 +6,9 @@ from pathlib import Path
 from specforge import __version__
 from specforge.gaps import detect_gaps
 from specforge.persistence import load_fact_bundle
+from specforge.renderers import write_fact_bundle, write_spec_bundle
 from specforge.scanner import scan_project
 from specforge.trace import build_trace_claims
-from specforge.writers import write_fact_bundle, write_spec_bundle
 
 DEFAULT_WORK_DIR = ".specforge"
 DEFAULT_SPEC_OUT = "specforge-output"
