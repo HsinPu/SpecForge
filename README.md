@@ -36,6 +36,22 @@ curl -fsSL https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/insta
 
 安裝完成後會提供 `specforge` 指令。若新開終端後仍找不到指令，請重開 terminal，或確認安裝腳本提示的 bin 目錄已加入 PATH。
 
+## 解除安裝
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy ByPass -NoProfile -Command "iex (irm https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/uninstall.ps1)"
+```
+
+Linux / macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/uninstall.sh | bash
+```
+
+解除安裝只會移除 `specforge` 指令與安裝環境，不會自動刪除各專案裡已產生的 `.specforge` 或 `specforge-output`。
+
 ## 使用方式
 
 第一次在專案底下初始化：
