@@ -48,6 +48,10 @@ Project: `{facts.name}`
 - Data layer facts: {len(facts.data_layers)}
 - Runtime config facts: {len(facts.runtime_configs)}
 - Test map entries: {len(facts.test_maps)}
+- Feature map entries: {len(facts.feature_maps)}
+- Module boundaries: {len(facts.module_boundaries)}
+- Refactor findings: {len(facts.refactor_findings)}
+- Contract gaps: {len(facts.contract_gaps)}
 - Frontend pages: {len(facts.pages)}
 - Forms: {len(facts.forms)}
 - Styles: {len(facts.styles)}
@@ -96,6 +100,10 @@ This spec bundle was generated from deterministic codebase scanning. It is an ev
 - Symbols detected: {len(facts.symbols)}
 - Test files detected: {len(facts.test_files)}
 - Test map entries detected: {len(facts.test_maps)}
+- Feature map entries detected: {len(facts.feature_maps)}
+- Module boundaries detected: {len(facts.module_boundaries)}
+- Refactor findings detected: {len(facts.refactor_findings)}
+- Contract gaps detected: {len(facts.contract_gaps)}
 - Open gaps: {len(gaps)}
 
 ## Reading Order
@@ -132,10 +140,16 @@ This spec bundle was generated from deterministic codebase scanning. It is an ev
 30. `commands.md`
 31. `tests.md`
 32. `test-map.md`
-33. `implementation-guide.md`
-34. `llm-handoff.md`
-35. `gaps-and-questions.md`
-36. `evidence.md`
+33. `feature-map.md`
+34. `rebuild-spec.md`
+35. `module-boundaries.md`
+36. `contract-gaps.md`
+37. `refactor-plan.md`
+38. `spec-diff.md`
+39. `implementation-guide.md`
+40. `llm-handoff.md`
+41. `gaps-and-questions.md`
+42. `evidence.md`
 
 ## Evidence Policy
 
@@ -238,6 +252,10 @@ SpecForge describes architecture from repository structure, manifests, language 
 - Data-layer facts: {len(facts.data_layers)}
 - Runtime config facts: {len(facts.runtime_configs)}
 - Test map entries: {len(facts.test_maps)}
+- Feature map entries: {len(facts.feature_maps)}
+- Module boundaries: {len(facts.module_boundaries)}
+- Refactor findings: {len(facts.refactor_findings)}
+- Contract gaps: {len(facts.contract_gaps)}
 
 ### API Links
 
@@ -254,6 +272,13 @@ SpecForge describes architecture from repository structure, manifests, language 
 ### Test Map
 
 {test_map}
+
+## Rebuild And Refactor Surface
+
+- Feature map entries: {len(facts.feature_maps)}
+- Module boundaries: {len(facts.module_boundaries)}
+- Refactor findings: {len(facts.refactor_findings)}
+- Contract gaps: {len(facts.contract_gaps)}
 
 ## File Roles
 

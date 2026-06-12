@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             facts = scan_project(root)
 
             self.assertEqual(facts.name, Path(tmp).name)
-            self.assertEqual(facts.schema_version, "1.3")
+            self.assertEqual(facts.schema_version, "2.0")
             self.assertEqual(facts.languages["python"], 2)
             self.assertEqual(len(facts.test_files), 1)
             self.assertEqual(facts.dependencies[0].name, "requests>=2")
@@ -112,6 +112,12 @@ def main(argv: list[str] | None = None) -> int:
             self.assertTrue((spec_out / "frontend-map.md").exists())
             self.assertTrue((spec_out / "runtime-config.md").exists())
             self.assertTrue((spec_out / "test-map.md").exists())
+            self.assertTrue((spec_out / "feature-map.md").exists())
+            self.assertTrue((spec_out / "rebuild-spec.md").exists())
+            self.assertTrue((spec_out / "refactor-plan.md").exists())
+            self.assertTrue((spec_out / "module-boundaries.md").exists())
+            self.assertTrue((spec_out / "contract-gaps.md").exists())
+            self.assertTrue((spec_out / "spec-diff.md").exists())
             self.assertTrue((spec_out / "implementation-guide.md").exists())
             self.assertTrue((spec_out / "llm-handoff.md").exists())
             self.assertTrue((spec_out / "gaps-and-questions.md").exists())
@@ -156,6 +162,19 @@ program
             self.assertIn("main", {symbol.name for symbol in facts.symbols})
             self.assertIn("scan", {command.name for command in facts.commands})
 
+    def test_scan_project_accepts_utf8_bom_package_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                '\ufeff{"bin":{"demo":"./bin/demo.js"},"dependencies":{"express":"^4.0.0"}}\n',
+                encoding="utf-8",
+            )
+
+            facts = scan_project(root)
+
+            self.assertIn("express", {dependency.name for dependency in facts.dependencies})
+            self.assertIn("demo", {entrypoint.command for entrypoint in facts.entrypoints})
+
     def test_render_accepts_legacy_fact_bundle_without_v1_1_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -195,7 +214,7 @@ program
             spec_out = root / "spec"
             write_spec_bundle(facts, claims, gaps, spec_out)
 
-            self.assertEqual(facts.schema_version, "1.3")
+            self.assertEqual(facts.schema_version, "2.0")
             self.assertEqual(facts.servlets, [])
             self.assertEqual(facts.pages, [])
             self.assertEqual(facts.forms, [])
@@ -208,6 +227,10 @@ program
             self.assertEqual(facts.data_layers, [])
             self.assertEqual(facts.runtime_configs, [])
             self.assertEqual(facts.test_maps, [])
+            self.assertEqual(facts.feature_maps, [])
+            self.assertEqual(facts.module_boundaries, [])
+            self.assertEqual(facts.refactor_findings, [])
+            self.assertEqual(facts.contract_gaps, [])
             self.assertTrue((spec_out / "java-web.md").exists())
             self.assertTrue((spec_out / "pages.md").exists())
             self.assertTrue((spec_out / "frontend-map.md").exists())
@@ -215,6 +238,12 @@ program
             self.assertTrue((spec_out / "data-layer.md").exists())
             self.assertTrue((spec_out / "runtime-config.md").exists())
             self.assertTrue((spec_out / "test-map.md").exists())
+            self.assertTrue((spec_out / "feature-map.md").exists())
+            self.assertTrue((spec_out / "rebuild-spec.md").exists())
+            self.assertTrue((spec_out / "refactor-plan.md").exists())
+            self.assertTrue((spec_out / "module-boundaries.md").exists())
+            self.assertTrue((spec_out / "contract-gaps.md").exists())
+            self.assertTrue((spec_out / "spec-diff.md").exists())
 
 
 if __name__ == "__main__":

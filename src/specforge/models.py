@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-FACT_SCHEMA_VERSION = "1.3"
+FACT_SCHEMA_VERSION = "2.0"
 
 
 @dataclass(frozen=True)
@@ -331,6 +331,54 @@ class TestMapFact:
 
 
 @dataclass(frozen=True)
+class FeatureMapFact:
+    name: str
+    summary: str
+    frontend_sources: list[str]
+    frontend_routes: list[str]
+    pages: list[str]
+    components: list[str]
+    forms: list[str]
+    api_calls: list[str]
+    backend_routes: list[str]
+    contracts: list[str]
+    services: list[str]
+    repositories: list[str]
+    data_models: list[str]
+    tests: list[str]
+    confidence: str
+    evidence: list[Evidence] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ModuleBoundaryFact:
+    name: str
+    kind: str
+    paths: list[str]
+    responsibilities: list[str]
+    depends_on: list[str]
+    evidence: list[Evidence] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RefactorFindingFact:
+    title: str
+    severity: str
+    subject: str
+    detail: str
+    recommendation: str
+    evidence: list[Evidence] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContractGapFact:
+    contract: str
+    gap_type: str
+    detail: str
+    evidence: list[Evidence] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ImportFact:
     path: str
     module: str | None
@@ -397,6 +445,10 @@ class ProjectFacts:
     data_layers: list[DataLayerFact] = field(default_factory=list)
     runtime_configs: list[RuntimeConfigFact] = field(default_factory=list)
     test_maps: list[TestMapFact] = field(default_factory=list)
+    feature_maps: list[FeatureMapFact] = field(default_factory=list)
+    module_boundaries: list[ModuleBoundaryFact] = field(default_factory=list)
+    refactor_findings: list[RefactorFindingFact] = field(default_factory=list)
+    contract_gaps: list[ContractGapFact] = field(default_factory=list)
     imports: list[ImportFact] = field(default_factory=list)
     symbols: list[SymbolFact] = field(default_factory=list)
     extraction_issues: list[ExtractionIssue] = field(default_factory=list)
@@ -801,6 +853,58 @@ def test_map_fact_from_dict(value: dict[str, Any]) -> TestMapFact:
     )
 
 
+def feature_map_fact_from_dict(value: dict[str, Any]) -> FeatureMapFact:
+    return FeatureMapFact(
+        name=value["name"],
+        summary=value["summary"],
+        frontend_sources=list(value.get("frontend_sources", [])),
+        frontend_routes=list(value.get("frontend_routes", [])),
+        pages=list(value.get("pages", [])),
+        components=list(value.get("components", [])),
+        forms=list(value.get("forms", [])),
+        api_calls=list(value.get("api_calls", [])),
+        backend_routes=list(value.get("backend_routes", [])),
+        contracts=list(value.get("contracts", [])),
+        services=list(value.get("services", [])),
+        repositories=list(value.get("repositories", [])),
+        data_models=list(value.get("data_models", [])),
+        tests=list(value.get("tests", [])),
+        confidence=value.get("confidence", "low"),
+        evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
+    )
+
+
+def module_boundary_fact_from_dict(value: dict[str, Any]) -> ModuleBoundaryFact:
+    return ModuleBoundaryFact(
+        name=value["name"],
+        kind=value["kind"],
+        paths=list(value.get("paths", [])),
+        responsibilities=list(value.get("responsibilities", [])),
+        depends_on=list(value.get("depends_on", [])),
+        evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
+    )
+
+
+def refactor_finding_fact_from_dict(value: dict[str, Any]) -> RefactorFindingFact:
+    return RefactorFindingFact(
+        title=value["title"],
+        severity=value["severity"],
+        subject=value["subject"],
+        detail=value["detail"],
+        recommendation=value["recommendation"],
+        evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
+    )
+
+
+def contract_gap_fact_from_dict(value: dict[str, Any]) -> ContractGapFact:
+    return ContractGapFact(
+        contract=value["contract"],
+        gap_type=value["gap_type"],
+        detail=value["detail"],
+        evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
+    )
+
+
 def import_fact_from_dict(value: dict[str, Any]) -> ImportFact:
     return ImportFact(
         path=value["path"],
@@ -954,6 +1058,22 @@ def project_facts_from_dict(value: dict[str, Any]) -> ProjectFacts:
         test_maps=[
             test_map_fact_from_dict(item)
             for item in value.get("test_maps", [])
+        ],
+        feature_maps=[
+            feature_map_fact_from_dict(item)
+            for item in value.get("feature_maps", [])
+        ],
+        module_boundaries=[
+            module_boundary_fact_from_dict(item)
+            for item in value.get("module_boundaries", [])
+        ],
+        refactor_findings=[
+            refactor_finding_fact_from_dict(item)
+            for item in value.get("refactor_findings", [])
+        ],
+        contract_gaps=[
+            contract_gap_fact_from_dict(item)
+            for item in value.get("contract_gaps", [])
         ],
         imports=[
             import_fact_from_dict(item)

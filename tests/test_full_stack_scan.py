@@ -438,7 +438,7 @@ createRouter({ routes });
             self.assertIn("login-card", (spec_out / "styles.md").read_text(encoding="utf-8"))
             self.assertIn("useSelector", (spec_out / "state.md").read_text(encoding="utf-8"))
 
-    def test_scan_project_builds_v1_3_connected_spec(self) -> None:
+    def test_scan_project_builds_v2_connected_rebuild_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "package.json").write_text(
@@ -762,6 +762,30 @@ interface UserMapper {}
             self.assertIn("prisma-schema", (spec_out / "data-layer.md").read_text(encoding="utf-8"))
             self.assertIn("env-key:DATABASE_URL", (spec_out / "runtime-config.md").read_text(encoding="utf-8"))
             self.assertIn("UserCard", (spec_out / "test-map.md").read_text(encoding="utf-8"))
+            self.assertTrue(facts.feature_maps)
+            self.assertTrue(facts.module_boundaries)
+            self.assertTrue(facts.refactor_findings)
+            self.assertTrue(facts.contract_gaps)
+            self.assertTrue(
+                any(
+                    "/api/users/123" in call
+                    for feature in facts.feature_maps
+                    for call in feature.api_calls
+                )
+            )
+            self.assertIn("unknown-error", {gap.gap_type for gap in facts.contract_gaps})
+            self.assertIn("frontend", {boundary.kind for boundary in facts.module_boundaries})
+            self.assertTrue((spec_out / "feature-map.md").exists())
+            self.assertTrue((spec_out / "rebuild-spec.md").exists())
+            self.assertTrue((spec_out / "refactor-plan.md").exists())
+            self.assertTrue((spec_out / "module-boundaries.md").exists())
+            self.assertTrue((spec_out / "contract-gaps.md").exists())
+            self.assertTrue((spec_out / "spec-diff.md").exists())
+            self.assertIn("/api/users/123", (spec_out / "feature-map.md").read_text(encoding="utf-8"))
+            self.assertIn("Rebuild Order", (spec_out / "rebuild-spec.md").read_text(encoding="utf-8"))
+            self.assertIn("unknown-error", (spec_out / "contract-gaps.md").read_text(encoding="utf-8"))
+            self.assertIn("Frontend Surface", (spec_out / "module-boundaries.md").read_text(encoding="utf-8"))
+            self.assertIn("No previous fact bundle", (spec_out / "spec-diff.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

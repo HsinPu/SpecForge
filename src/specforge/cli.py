@@ -5,6 +5,7 @@ from pathlib import Path
 
 from specforge import __version__
 from specforge.gaps import detect_gaps
+from specforge.models import ProjectFacts
 from specforge.persistence import load_fact_bundle
 from specforge.renderers import write_fact_bundle, write_spec_bundle
 from specforge.scanner import scan_project
@@ -116,7 +117,8 @@ def _update_command(args: argparse.Namespace) -> None:
     project = Path(args.project).resolve()
     work_dir = _project_output_path(project, args.work_dir)
     spec_out = _project_output_path(project, args.out)
-    _forge_project(project, work_dir, spec_out)
+    previous_facts = _load_previous_facts(work_dir)
+    _forge_project(project, work_dir, spec_out, previous_facts=previous_facts)
     print(f"Updated SpecForge bundle for {project}")
 
 
@@ -138,14 +140,30 @@ def _forge_command(args: argparse.Namespace) -> None:
     _forge_project(args.project, args.work_dir, args.out)
 
 
-def _forge_project(project: str | Path, work_dir: str | Path, spec_out: str | Path) -> None:
+def _forge_project(
+    project: str | Path,
+    work_dir: str | Path,
+    spec_out: str | Path,
+    previous_facts: ProjectFacts | None = None,
+) -> None:
     facts = scan_project(project)
     claims = build_trace_claims(facts)
     gaps = detect_gaps(facts)
     write_fact_bundle(facts, claims, gaps, work_dir)
-    write_spec_bundle(facts, claims, gaps, spec_out)
+    write_spec_bundle(facts, claims, gaps, spec_out, previous_facts=previous_facts)
     print(f"Wrote scan artifacts to {Path(work_dir).resolve()}")
     print(f"Wrote SpecForge spec bundle to {Path(spec_out).resolve()}")
+
+
+def _load_previous_facts(work_dir: Path) -> ProjectFacts | None:
+    facts_path = work_dir / "facts.json"
+    if not facts_path.exists():
+        return None
+    try:
+        facts, _claims, _gaps = load_fact_bundle(work_dir)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return facts
 
 
 def _project_output_path(project: Path, value: str) -> Path:

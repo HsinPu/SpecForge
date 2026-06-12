@@ -216,7 +216,7 @@ def _dependencies_from_pyproject(root: Path) -> list[DependencyFact]:
     path = root / "pyproject.toml"
     if not path.exists():
         return []
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    data = tomllib.loads(_read_manifest_text(path))
     project = data.get("project", {})
     items = project.get("dependencies", [])
     result = [_dependency(str(item), "pyproject.toml", "runtime") for item in items]
@@ -241,7 +241,7 @@ def _dependencies_from_package_json(root: Path) -> list[DependencyFact]:
     path = root / "package.json"
     if not path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json_manifest(path)
     result: list[DependencyFact] = []
     for scope_name, scope in [("dependencies", "runtime"), ("devDependencies", "development")]:
         for name in data.get(scope_name, {}):
@@ -288,7 +288,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
     result: list[EntrypointFact] = []
     package_json = root / "package.json"
     if package_json.exists():
-        data = json.loads(package_json.read_text(encoding="utf-8"))
+        data = _read_json_manifest(package_json)
         bins = data.get("bin", {})
         if isinstance(bins, str):
             result.append(_entrypoint(bins, "node-bin", None, "package.json"))
@@ -298,7 +298,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
 
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        data = tomllib.loads(_read_manifest_text(pyproject))
         scripts = data.get("project", {}).get("scripts", {})
         for command, target in scripts.items():
             result.append(_entrypoint(str(target), "python-console-script", str(command), "pyproject.toml"))
@@ -316,3 +316,11 @@ def _entrypoint(path: str, kind: str, command: str | None, evidence_file: str) -
         command=command,
         evidence=Evidence(file=evidence_file, kind="entrypoint"),
     )
+
+
+def _read_json_manifest(path: Path) -> object:
+    return json.loads(_read_manifest_text(path))
+
+
+def _read_manifest_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8-sig")

@@ -1,122 +1,171 @@
 # SpecForge
 
-以 evidence 為核心的 codebase-to-spec 產生器。
+SpecForge 是一個 evidence-first 的 codebase-to-spec 工具。
 
-SpecForge 會掃描既有專案，抽取可追溯的 deterministic facts，並產生一份人和 LLM 都能閱讀的 spec bundle。它不需要 LLM、不呼叫外部服務，重點是把「程式碼裡真的看得到的內容」整理成可交接的專案骨架。
+它會掃描一個專案，產生一份人和 LLM 都看得懂的 spec bundle。掃描過程不使用 LLM，所有結論都盡量附上來源檔案與行號；掃不到的地方會列成 gap。
 
-## 目標
+## 目前定位
 
-把一個專案整理成這樣的關聯式規格：
+SpecForge v0.2 主要做兩件事：
+
+```text
+v0.1: 掃描全端專案骨架
+v0.2: 把掃到的骨架串成可重構 / 可重建的關聯 spec
+```
+
+它會嘗試把這條鏈串起來：
 
 ```text
 Page / Component / Form
 -> API Call
 -> Backend Route
--> Request / Response Contract
+-> API Contract
 -> Service / Repository / Data Model
--> Runtime Config
 -> Test Evidence
 ```
 
-這份 spec 可以給人看，也可以交給 LLM 作為重建、轉寫、migration 或理解專案的依據。
-
 ## 一鍵安裝
 
-Windows：
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -NoProfile -Command "iex (irm https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/install.ps1)"
 ```
 
-Linux / macOS：
+Linux / macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/install.sh | bash
 ```
 
-安裝完成後會提供 `specforge` 指令。若新開終端後仍找不到指令，請重開 terminal，或確認安裝腳本提示的 bin 目錄已加入 PATH。
+安裝後重新開一個 terminal，確認：
+
+```bash
+specforge --version
+```
 
 ## 解除安裝
 
-Windows：
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -NoProfile -Command "iex (irm https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/uninstall.ps1)"
 ```
 
-Linux / macOS：
+Linux / macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/uninstall.sh | bash
 ```
 
-解除安裝只會移除 `specforge` 指令與安裝環境，不會自動刪除各專案裡已產生的 `.specforge` 或 `specforge-output`。
+解除安裝只移除 `specforge` 指令與安裝目錄，不會刪你的專案裡的 `.specforge` 或 `specforge-output`。
 
 ## 使用方式
 
-第一次在專案底下初始化：
+第一次掃描專案：
 
-```powershell
-cd C:\path\to\project
+```bash
+cd your-project
 specforge init
 ```
 
-之後要重新掃描、更新 spec：
+之後更新 spec：
 
-```powershell
-cd C:\path\to\project
+```bash
 specforge update
 ```
 
-如果已經有 `.specforge` 或 `specforge-output`，`specforge init` 會停止並提示改用 `update`。需要強制重建時可以用：
+如果已經有 `.specforge` 或 `specforge-output`，`init` 會停止，避免覆蓋既有結果。要刷新請用：
 
-```powershell
+```bash
+specforge update
+```
+
+真的要重新初始化：
+
+```bash
 specforge init --force
 ```
 
-產物會建立在你執行指令的資料夾底下：
+## 輸出在哪
+
+預設會產生在被掃描的專案底下：
 
 ```text
-C:\path\to\project\.specforge
-C:\path\to\project\specforge-output
+your-project/.specforge/          facts.json, traceability.json, gaps.json
+your-project/specforge-output/    Markdown spec bundle
 ```
 
-只有想指定輸出資料夾時才需要加參數：
+`.specforge` 偏向工具讀取，`specforge-output` 是給人和 LLM 看的。
 
-```powershell
-specforge init --out my-spec
-specforge update --out my-spec
-```
+## 建議閱讀順序
 
-## 目前支援
-
-- Python / JavaScript / TypeScript 基礎 symbols、imports、commands。
-- Express、Next API、FastAPI、Flask、Spring MVC、Servlet route。
-- React、Vue、Next、HTML、JSP、常見模板頁面與 CSS/assets。
-- Spring/Maven、Servlet/JSP、JPA、repository、service 骨架。
-- SQL、Prisma、Drizzle、MyBatis、SQLAlchemy、Django model 資料層訊號。
-- env、Docker、Compose、GitHub Actions、Spring/Vite/Next config runtime 訊號。
-- frontend API call 到 backend route 的保守關聯。
-- API contract skeleton、test map、gaps、evidence trace。
-
-## 產出內容
-
-`forge` 會輸出兩個資料夾：
+先看總覽：
 
 ```text
-.specforge/          raw facts, traceability, gaps
-specforge-output/    Markdown spec bundle
+overview.md
+architecture.md
 ```
 
-主要文件會包含 overview、architecture、backend/frontend、API routes/contracts/links、data layer、runtime config、test map、implementation guide、LLM handoff、gaps 與 evidence。
+看全端骨架：
 
-## 原則
+```text
+backend.md
+frontend.md
+api-routes.md
+api-contracts.md
+api-links.md
+pages.md
+components.md
+data-models.md
+runtime-config.md
+test-map.md
+```
 
-- 只把有 evidence 的內容當作 fact。
-- 掃不到的 schema、auth、side effects、user flows 會列為 gaps。
-- 不讀 secret value，只列出可公開的 key name 與來源。
-- 第一版優先產生穩定骨架，不做完整 call graph 或完整業務邏輯推論。
+看 v0.2 重構 / 重建文件：
 
-## 授權
+```text
+feature-map.md
+rebuild-spec.md
+module-boundaries.md
+contract-gaps.md
+refactor-plan.md
+spec-diff.md
+llm-handoff.md
+```
 
-MIT。
+## 目前可掃描的內容
+
+- Python / JavaScript / TypeScript / Java 基礎 symbols、imports、commands
+- Express、Next API、FastAPI、Flask、Spring MVC、Servlet routes
+- React、Vue、Next、HTML、JSP、forms、CSS、assets、state usage
+- Spring / Maven、Servlet / JSP、JPA entity、repository、service
+- SQL、Prisma、Drizzle、MyBatis、SQLAlchemy、Django model
+- `.env.example`、Dockerfile、docker-compose、GitHub Actions、Spring / Vite / Next config
+- frontend API call 對 backend route 的初步關聯
+- API contract skeleton、test map、runtime config、gaps、evidence trace
+
+## v0.2 新增了什麼
+
+- `feature-map.md`: 把前端 API call、後端 route、contract、data/test evidence 組成功能切片
+- `rebuild-spec.md`: 給人或 LLM 的重建順序
+- `refactor-plan.md`: 保守列出重構提醒
+- `module-boundaries.md`: 粗分 frontend、backend API、data layer、runtime config、tests、shared source
+- `contract-gaps.md`: 集中列出 unknown request、response、status、error、unmatched API
+- `spec-diff.md`: `update` 時比較上一份 facts，列出新增或移除的 route、API call、component、page、model
+
+## 限制
+
+- 不會完整理解業務邏輯
+- 不會保證完整 call graph
+- 不會推論 auth/security、DB side effects、transaction、完整 user flow
+- 不會讀取 secret value，只列 key name
+- 沒有 evidence 的內容不能當事實，只能當 gap 或 unknown
+
+## 版本紀錄
+
+版本變更請看 [CHANGELOG.md](CHANGELOG.md)。
+
+## License
+
+MIT

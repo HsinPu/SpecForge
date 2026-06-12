@@ -12,7 +12,7 @@ from specforge import writers as writer_facade
 from specforge.cli import main
 from specforge.renderers import write_fact_bundle, write_spec_bundle
 
-from fixtures import create_project, write_file
+from fixtures import create_project, create_v2_linked_project, write_file
 
 
 class ScannerTests(unittest.TestCase):
@@ -28,6 +28,10 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(main(["init", str(project)]), 0)
             self.assertTrue((project / ".specforge" / "facts.json").exists())
             self.assertTrue((project / "specforge-output" / "overview.md").exists())
+            self.assertIn(
+                "baseline",
+                (project / "specforge-output" / "spec-diff.md").read_text(encoding="utf-8"),
+            )
 
             with self.assertRaises(SystemExit):
                 main(["init", str(project)])
@@ -35,10 +39,35 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(main(["init", "--force", str(project)]), 0)
 
             write_file(project, "src/app.py", "def main():\n    return 0\n")
+            write_file(
+                project,
+                "package.json",
+                '{"dependencies":{"express":"^4.0.0","react":"^18.0.0"}}\n',
+            )
+            write_file(
+                project,
+                "src/server.ts",
+                "import express from 'express';\nconst app = express();\napp.get('/api/users', listUsers);\n",
+            )
+            write_file(
+                project,
+                "src/App.tsx",
+                "export function App() {\n  fetch('/api/users');\n  return <div />;\n}\n",
+            )
 
             self.assertEqual(main(["update", str(project)]), 0)
             facts = json.loads((project / ".specforge" / "facts.json").read_text(encoding="utf-8"))
             self.assertIn("python", {file_fact["language"] for file_fact in facts["files"]})
+            self.assertTrue(facts["feature_maps"])
+            self.assertTrue(facts["contract_gaps"])
+            self.assertIn(
+                "/api/users",
+                (project / "specforge-output" / "spec-diff.md").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "/api/users",
+                (project / "specforge-output" / "feature-map.md").read_text(encoding="utf-8"),
+            )
             self.assertFalse(
                 any(
                     file_fact["path"].startswith((".specforge/", "specforge-output/"))
@@ -49,8 +78,7 @@ class ScannerTests(unittest.TestCase):
     def test_cli_scan_render_and_forge_commands_still_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            project = create_project(root)
-            write_file(project, "src/app.py", "def main():\n    return 0\n")
+            project = create_v2_linked_project(root)
             facts_dir = root / "facts"
             rendered_dir = root / "rendered"
             work_dir = root / "work"

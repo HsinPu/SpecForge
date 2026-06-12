@@ -86,6 +86,21 @@ def render_implementation_guide(facts: ProjectFacts, gaps: list[Gap]) -> str:
         f"- `{item.test_path}` -> {item.target_kind} `{item.target or 'unmatched'}` ({item.confidence})"
         for item in facts.test_maps
     ) or "- no test map entries generated"
+    feature_map = "\n".join(
+        f"- {feature.name}: calls=[{', '.join(feature.api_calls) or 'none'}] "
+        f"routes=[{', '.join(feature.backend_routes) or 'none'}] "
+        f"tests=[{', '.join(feature.tests) or 'unknown'}]"
+        for feature in facts.feature_maps
+    ) or "- no feature map entries generated"
+    module_boundaries = "\n".join(
+        f"- {boundary.name} ({boundary.kind}) paths={len(boundary.paths)} "
+        f"depends_on=[{', '.join(boundary.depends_on) or 'none'}]"
+        for boundary in facts.module_boundaries
+    ) or "- no module boundaries generated"
+    contract_gaps = "\n".join(
+        f"- `{gap.contract}` {gap.gap_type}: {gap.detail}"
+        for gap in facts.contract_gaps
+    ) or "- no contract gaps generated"
     return f"""# Implementation Guide
 
 ## Intent
@@ -175,22 +190,37 @@ This document is the bridge between the observed codebase and a future implement
 
 {test_map}
 
+## Feature Map Contract
+
+{feature_map}
+
+## Module Boundary Contract
+
+{module_boundaries}
+
+## Contract Gap Contract
+
+{contract_gaps}
+
 ## Reimplementation Workflow
 
 1. Read `overview.md` and `architecture.md`.
-2. Recreate API links from `api-links.md`; treat unmatched calls/routes as gaps.
-3. Recreate backend route contracts from `backend.md`, `api-routes.md`, and `api-contracts.md`.
-4. Recreate Java Web contracts from `java-web.md`, `spring.md`, `servlets.md`, `jsp-pages.md`, and `data-models.md`.
-5. Recreate frontend pages and routes from `pages.md`, `frontend-routes.md`, and `frontend-map.md`.
-6. Recreate forms and API integrations from `forms.md`, `api-calls.md`, and `api-links.md`.
-7. Recreate data and persistence skeletons from `data-models.md` and `data-layer.md`.
-8. Recreate runtime setup from `runtime-config.md`, `entrypoints.md`, and `commands.md`.
-9. Recreate components and state surfaces from `components.md` and `state.md`.
-10. Recreate styles and static assets from `styles.md` and `assets.md`.
-11. Recreate modules from `modules.md` and `symbols.md`.
-12. Use `imports.md`, `frameworks.md`, and `dependencies.md` to choose equivalent libraries.
-13. Port or recreate tests listed in `tests.md`, using `test-map.md` to prioritize targets.
-14. Resolve every item in `gaps-and-questions.md` before declaring parity.
+2. Read `feature-map.md` and `rebuild-spec.md` to choose implementation slices.
+3. Read `contract-gaps.md`; keep unknown schemas and behavior unknown until confirmed.
+4. Recreate API links from `api-links.md`; treat unmatched calls/routes as gaps.
+5. Recreate backend route contracts from `backend.md`, `api-routes.md`, and `api-contracts.md`.
+6. Recreate Java Web contracts from `java-web.md`, `spring.md`, `servlets.md`, `jsp-pages.md`, and `data-models.md`.
+7. Recreate frontend pages and routes from `pages.md`, `frontend-routes.md`, and `frontend-map.md`.
+8. Recreate forms and API integrations from `forms.md`, `api-calls.md`, and `api-links.md`.
+9. Recreate data and persistence skeletons from `data-models.md` and `data-layer.md`.
+10. Recreate runtime setup from `runtime-config.md`, `entrypoints.md`, and `commands.md`.
+11. Recreate components and state surfaces from `components.md` and `state.md`.
+12. Recreate styles and static assets from `styles.md` and `assets.md`.
+13. Recreate modules from `modules.md`, `symbols.md`, and `module-boundaries.md`.
+14. Use `imports.md`, `frameworks.md`, and `dependencies.md` to choose equivalent libraries.
+15. Port or recreate tests listed in `tests.md`, using `test-map.md` to prioritize targets.
+16. Use `refactor-plan.md` for cleanup sequencing after behavior is covered.
+17. Resolve every item in `gaps-and-questions.md` before declaring parity.
 
 ## Known Limits
 
@@ -221,9 +251,11 @@ Recreate the project `{facts.name}` from the spec bundle, preserving observable 
 3. `frameworks.md`, `backend.md`, `api-routes.md`, and `api-contracts.md` for backend contracts.
 4. `java-web.md`, `spring.md`, `servlets.md`, `jsp-pages.md`, `data-models.md`, and `data-layer.md` for Java Web, legacy page, and persistence contracts.
 5. `frontend.md`, `pages.md`, `forms.md`, `components.md`, `frontend-routes.md`, `api-calls.md`, `state.md`, `styles.md`, `assets.md`, and `frontend-map.md` for frontend product surfaces.
-6. `runtime-config.md`, `entrypoints.md`, `commands.md`, `modules.md`, `symbols.md`, `tests.md`, and `test-map.md` for implementation targets.
-7. `implementation-guide.md` for rebuild workflow.
-8. `gaps-and-questions.md` for unresolved items.
+6. `feature-map.md`, `rebuild-spec.md`, `module-boundaries.md`, `contract-gaps.md`, and `refactor-plan.md` for rebuild and refactor sequencing.
+7. `runtime-config.md`, `entrypoints.md`, `commands.md`, `modules.md`, `symbols.md`, `tests.md`, and `test-map.md` for implementation targets.
+8. `spec-diff.md` for changes since the previous update when available.
+9. `implementation-guide.md` for rebuild workflow.
+10. `gaps-and-questions.md` for unresolved items.
 
 ## Rules
 
@@ -268,9 +300,13 @@ Recreate the project `{facts.name}` from the spec bundle, preserving observable 
 - Commands detected: {len(facts.commands)}
 - Tests detected: {len(facts.test_files)}
 - Test map entries detected: {len(facts.test_maps)}
+- Feature map entries detected: {len(facts.feature_maps)}
+- Module boundaries detected: {len(facts.module_boundaries)}
+- Refactor findings detected: {len(facts.refactor_findings)}
+- Contract gaps detected: {len(facts.contract_gaps)}
 - Gaps detected: {len(gaps)}
 
 ## Starting Prompt
 
-Implement `{facts.name}` from this SpecForge bundle. First summarize the backend routes, frontend routes/screens, pages/forms/components, API calls, API links, unmatched API calls, unmatched backend routes, API contracts with unknown request/response/status/error fields, Java Web Servlet/JSP surface, state usage, styles, assets, data models, data layer, runtime config, public entrypoints, commands, modules, symbols, test map, unmatched tests, and unresolved gaps. Then propose an implementation plan that preserves observed behavior before writing code.
+Implement `{facts.name}` from this SpecForge bundle. First summarize feature-map entries, rebuild targets, module boundaries, refactor findings, contract gaps, backend routes, frontend routes/screens, pages/forms/components, API calls, API links, unmatched API calls, unmatched backend routes, API contracts with unknown request/response/status/error fields, Java Web Servlet/JSP surface, state usage, styles, assets, data models, data layer, runtime config, public entrypoints, commands, modules, symbols, test map, unmatched tests, spec diff, and unresolved gaps. Then propose an implementation plan that preserves observed behavior before writing code.
 """

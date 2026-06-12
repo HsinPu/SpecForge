@@ -343,6 +343,52 @@ def build_trace_claims(facts: ProjectFacts) -> list[TraceClaim]:
             )
         )
 
+    for index, feature in enumerate(facts.feature_maps, start=1):
+        claims.append(
+            TraceClaim(
+                claim_id=f"FEATURE-{index:03d}",
+                claim=f"Feature map {feature.name} connects {len(feature.api_calls)} API call(s) and {len(feature.backend_routes)} backend route(s)",
+                claim_type="feature-map",
+                confidence=0.8 if feature.confidence == "high" else 0.6 if feature.confidence == "medium" else 0.4,
+                evidence=feature.evidence,
+            )
+        )
+
+    for index, boundary in enumerate(facts.module_boundaries, start=1):
+        claims.append(
+            TraceClaim(
+                claim_id=f"BOUNDARY-{index:03d}",
+                claim=f"Module boundary {boundary.name} includes {len(boundary.paths)} path(s)",
+                claim_type="module-boundary",
+                confidence=0.7,
+                evidence=boundary.evidence,
+            )
+        )
+
+    for index, finding in enumerate(facts.refactor_findings, start=1):
+        claims.append(
+            TraceClaim(
+                claim_id=f"REFACTOR-{index:03d}",
+                claim=f"Refactor finding {finding.title} applies to {finding.subject}",
+                claim_type="refactor-finding",
+                confidence=0.65,
+                evidence=finding.evidence,
+                status="gap",
+            )
+        )
+
+    for index, gap in enumerate(facts.contract_gaps, start=1):
+        claims.append(
+            TraceClaim(
+                claim_id=f"CONTRACT-GAP-{index:03d}",
+                claim=f"Contract gap {gap.gap_type} applies to {gap.contract}",
+                claim_type="contract-gap",
+                confidence=0.8,
+                evidence=gap.evidence,
+                status="gap",
+            )
+        )
+
     for index, symbol in enumerate(facts.symbols, start=1):
         claims.append(
             TraceClaim(

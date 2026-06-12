@@ -40,6 +40,14 @@ from specforge.renderers.overview import (
     render_summary,
     render_symbols,
 )
+from specforge.renderers.rebuild import (
+    render_contract_gaps,
+    render_feature_map,
+    render_module_boundaries,
+    render_rebuild_spec,
+    render_refactor_plan,
+    render_spec_diff,
+)
 from specforge.renderers.supporting import (
     render_commands,
     render_entrypoints,
@@ -69,10 +77,11 @@ def write_spec_bundle(
     claims: list[TraceClaim],
     gaps: list[Gap],
     out_dir: str | Path,
+    previous_facts: ProjectFacts | None = None,
 ) -> None:
     output_path = Path(out_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    _write_markdown_documents(output_path, _spec_documents(facts, claims, gaps))
+    _write_markdown_documents(output_path, _spec_documents(facts, claims, gaps, previous_facts))
     _write_json(output_path / "facts.json", facts)
     _write_json(output_path / "traceability.json", claims)
     _write_json(output_path / "gaps.json", gaps)
@@ -85,6 +94,7 @@ def _spec_documents(
     facts: ProjectFacts,
     claims: list[TraceClaim],
     gaps: list[Gap],
+    previous_facts: ProjectFacts | None = None,
 ) -> list[tuple[str, str]]:
     return [
         ("overview.md", render_overview(facts, gaps)),
@@ -120,6 +130,12 @@ def _spec_documents(
         ("tests.md", render_tests(facts)),
         ("runtime-config.md", render_runtime_config(facts)),
         ("test-map.md", render_test_map(facts)),
+        ("feature-map.md", render_feature_map(facts)),
+        ("rebuild-spec.md", render_rebuild_spec(facts)),
+        ("refactor-plan.md", render_refactor_plan(facts)),
+        ("module-boundaries.md", render_module_boundaries(facts)),
+        ("contract-gaps.md", render_contract_gaps(facts)),
+        ("spec-diff.md", render_spec_diff(facts, previous_facts)),
         ("gaps-and-questions.md", render_gaps(gaps)),
         ("implementation-guide.md", render_implementation_guide(facts, gaps)),
         ("llm-handoff.md", render_llm_handoff(facts, gaps)),

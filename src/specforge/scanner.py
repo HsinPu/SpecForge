@@ -11,6 +11,7 @@ from specforge.extractors.frameworks import detect_frameworks
 from specforge.extractors.frontend import build_frontend_surfaces, extract_frontend_facts
 from specforge.extractors.java_web import extract_java_web_facts
 from specforge.extractors.python_ast import extract_python_facts
+from specforge.extractors.relationships import build_relationship_facts
 from specforge.extractors.runtime_config import extract_runtime_config_facts
 from specforge.extractors.static_frontend import build_frontend_maps, extract_static_frontend_facts
 from specforge.extractors.test_map import build_test_maps
@@ -44,9 +45,11 @@ from specforge.models import (
     ImportFact,
     JavaWebSurfaceFact,
     JspPageFact,
+    ContractGapFact,
     PageFact,
     ProjectFacts,
     RepositoryFact,
+    RefactorFindingFact,
     RuntimeConfigFact,
     ServiceFact,
     ServletFact,
@@ -54,6 +57,8 @@ from specforge.models import (
     StyleFact,
     SymbolFact,
     TestMapFact,
+    FeatureMapFact,
+    ModuleBoundaryFact,
 )
 
 
@@ -103,6 +108,10 @@ class ConnectedScan:
     backend_surfaces: list[BackendSurfaceFact]
     frontend_maps: list[FrontendMapFact]
     frontend_surfaces: list[FrontendSurfaceFact]
+    feature_maps: list[FeatureMapFact]
+    module_boundaries: list[ModuleBoundaryFact]
+    refactor_findings: list[RefactorFindingFact]
+    contract_gaps: list[ContractGapFact]
 
 
 def scan_project(root: str | Path) -> ProjectFacts:
@@ -176,6 +185,10 @@ def scan_project(root: str | Path) -> ProjectFacts:
         data_layers=connected_scan.data_layers,
         runtime_configs=connected_scan.runtime_configs,
         test_maps=connected_scan.test_maps,
+        feature_maps=connected_scan.feature_maps,
+        module_boundaries=connected_scan.module_boundaries,
+        refactor_findings=connected_scan.refactor_findings,
+        contract_gaps=connected_scan.contract_gaps,
         imports=language_scan.imports,
         symbols=language_scan.symbols,
         extraction_issues=language_scan.issues,
@@ -324,6 +337,27 @@ def _build_connected_surfaces(
         assets=frontend_scan.assets,
         state_usages=frontend_scan.state_usages,
     )
+    feature_maps, module_boundaries, refactor_findings, contract_gaps = build_relationship_facts(
+        file_facts,
+        frontend_scan.frontend_routes,
+        frontend_scan.pages,
+        frontend_scan.components,
+        frontend_scan.forms,
+        api_calls,
+        backend_scan.api_routes,
+        backend_scan.api_contracts,
+        api_links,
+        backend_scan.data_models,
+        backend_scan.repositories,
+        backend_scan.services,
+        data_layers,
+        runtime_configs,
+        test_maps,
+        frontend_scan.styles,
+        frontend_scan.assets,
+        frontend_scan.state_usages,
+        test_files,
+    )
     return ConnectedScan(
         api_links=api_links,
         api_calls=api_calls,
@@ -335,6 +369,10 @@ def _build_connected_surfaces(
         backend_surfaces=backend_surfaces,
         frontend_maps=frontend_maps,
         frontend_surfaces=frontend_surfaces,
+        feature_maps=feature_maps,
+        module_boundaries=module_boundaries,
+        refactor_findings=refactor_findings,
+        contract_gaps=contract_gaps,
     )
 
 
