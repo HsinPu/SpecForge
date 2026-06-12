@@ -188,13 +188,15 @@ def classify_role(relative_path: str) -> str:
 def is_test_path(relative_path: str) -> bool:
     normalized = relative_path.replace("\\", "/").lower()
     name = Path(normalized).name
+    is_root_python_test = "/" not in normalized and (
+        name.startswith("test_") or name.endswith("_test.py")
+    )
     return (
         normalized.startswith("test/")
         or normalized.startswith("tests/")
         or "/test/" in normalized
         or "/tests/" in normalized
-        or name.startswith("test_")
-        or name.endswith("_test.py")
+        or is_root_python_test
         or name.endswith(".test.ts")
         or name.endswith(".test.js")
     )

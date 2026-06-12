@@ -347,6 +347,9 @@ class FeatureMapFact:
     data_models: list[str]
     tests: list[str]
     confidence: str
+    commands: list[str] = field(default_factory=list)
+    implementation_sources: list[str] = field(default_factory=list)
+    implementation_reasons: list[str] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
 
 
@@ -870,6 +873,9 @@ def feature_map_fact_from_dict(value: dict[str, Any]) -> FeatureMapFact:
         data_models=list(value.get("data_models", [])),
         tests=list(value.get("tests", [])),
         confidence=value.get("confidence", "low"),
+        commands=list(value.get("commands", [])),
+        implementation_sources=list(value.get("implementation_sources", [])),
+        implementation_reasons=list(value.get("implementation_reasons", [])),
         evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
     )
 

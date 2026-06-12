@@ -19,13 +19,16 @@ def render_feature_map(facts: ProjectFacts) -> str:
             f"- Pages: {_code_list(feature.pages) or '`none`'}\n"
             f"- Components: {_code_list(feature.components) or '`none`'}\n"
             f"- Forms: {_code_list(feature.forms) or '`none`'}\n"
+            f"- Commands: {_code_list(feature.commands) or '`none`'}\n"
+            f"- Implementation sources: {_limited_code_list(feature.implementation_sources, 12) or '`unknown`'}\n"
+            f"- Implementation match reasons: {_limited_code_list(feature.implementation_reasons, 12) or '`unknown`'}\n"
             f"- API calls: {_code_list(feature.api_calls) or '`none`'}\n"
             f"- Backend routes: {_code_list(feature.backend_routes) or '`none`'}\n"
             f"- Contracts: {_code_list(feature.contracts) or '`none`'}\n"
             f"- Services: {_code_list(feature.services) or '`unknown`'}\n"
             f"- Repositories: {_code_list(feature.repositories) or '`unknown`'}\n"
             f"- Data models: {_code_list(feature.data_models) or '`unknown`'}\n"
-            f"- Tests: {_code_list(feature.tests) or '`unknown`'}\n"
+            f"- Tests: {_limited_code_list(feature.tests, 15) or '`unknown`'}\n"
             f"- Evidence: {evidence}\n"
         )
     return "\n".join(sections)
@@ -38,10 +41,11 @@ def render_rebuild_spec(facts: ProjectFacts) -> str:
         "unknown behavior stays unknown until confirmed.\n",
         "## Rebuild Order\n",
         "1. Recreate runtime/config and dependency assumptions.\n"
-        "2. Recreate backend API contracts and data boundaries.\n"
-        "3. Recreate frontend pages/components/forms that call those APIs.\n"
-        "4. Reconnect tests to each feature target.\n"
-        "5. Resolve contract gaps before claiming behavior parity.\n",
+        "2. Recreate CLI entrypoints and command contracts when present.\n"
+        "3. Recreate backend API contracts and data boundaries.\n"
+        "4. Recreate frontend pages/components/forms that call those APIs.\n"
+        "5. Reconnect tests to each feature target.\n"
+        "6. Resolve contract gaps before claiming behavior parity.\n",
     ]
     if not facts.feature_maps:
         sections.append("## Feature Targets\n\nNo feature targets were generated.\n")
@@ -56,10 +60,13 @@ def render_rebuild_spec(facts: ProjectFacts) -> str:
             sections.append(
                 f"### {feature.name}\n\n"
                 f"- Goal: {feature.summary}\n"
+                f"- CLI: {_code_list(feature.commands) or '`unknown`'}\n"
+                f"- Implementation: {_limited_code_list(feature.implementation_sources, 10) or '`unknown`'}\n"
+                f"- Match reasons: {_limited_code_list(feature.implementation_reasons, 10) or '`unknown`'}\n"
                 f"- Frontend: {_code_list(feature.pages + feature.components + feature.forms) or '`unknown`'}\n"
                 f"- API: {_code_list(feature.api_calls + feature.backend_routes) or '`unknown`'}\n"
                 f"- Data: {_code_list(feature.services + feature.repositories + feature.data_models) or '`unknown`'}\n"
-                f"- Tests: {_code_list(feature.tests) or '`unknown`'}\n"
+                f"- Tests: {_limited_code_list(feature.tests, 12) or '`unknown`'}\n"
                 f"- Contract gaps: {_code_list([gap.gap_type for gap in related_gaps]) or '`none detected`'}\n"
             )
 
@@ -102,7 +109,11 @@ def render_module_boundaries(facts: ProjectFacts) -> str:
     if not facts.module_boundaries:
         return "# Module Boundaries\n\nNo module boundaries were generated.\n"
     sections = ["# Module Boundaries\n"]
-    for boundary in facts.module_boundaries:
+    populated_boundaries = [boundary for boundary in facts.module_boundaries if boundary.paths]
+    empty_boundaries = [boundary for boundary in facts.module_boundaries if not boundary.paths]
+    if not populated_boundaries:
+        sections.append("No populated module boundaries were detected from scanned source paths.\n")
+    for boundary in populated_boundaries:
         evidence = ", ".join(_evidence_label(item) for item in boundary.evidence[:5]) or "`unknown`"
         sections.append(
             f"## {boundary.name}\n\n"
@@ -112,6 +123,10 @@ def render_module_boundaries(facts: ProjectFacts) -> str:
             f"- Paths: {_code_list(boundary.paths[:30]) or '`none detected`'}\n"
             f"- Evidence: {evidence}\n"
         )
+    if empty_boundaries:
+        sections.append("## Not Detected\n")
+        for boundary in empty_boundaries:
+            sections.append(f"- {boundary.name} ({boundary.kind})\n")
     return "\n".join(sections)
 
 
@@ -127,6 +142,61 @@ def render_contract_gaps(facts: ProjectFacts) -> str:
         evidence = ", ".join(_evidence_label(item) for item in gap.evidence[:3])
         rows.append(f"| `{gap.contract}` | {gap.gap_type} | {gap.detail} | {evidence} |")
     return "\n".join(rows) + "\n"
+
+
+def render_quality_report(facts: ProjectFacts) -> str:
+    command_features = [feature for feature in facts.feature_maps if feature.commands]
+    command_features_with_impl = [
+        feature for feature in command_features if feature.implementation_sources
+    ]
+    command_features_with_tests = [
+        feature for feature in command_features if feature.tests
+    ]
+    matched_api_links = [link for link in facts.api_links if link.matched_route]
+    unmatched_api_links = [link for link in facts.api_links if not link.matched_route]
+    matched_tests = [item for item in facts.test_maps if item.target_kind != "unmatched"]
+    unmatched_tests = [item for item in facts.test_maps if item.target_kind == "unmatched"]
+    populated_boundaries = [boundary for boundary in facts.module_boundaries if boundary.paths]
+    empty_boundaries = [boundary for boundary in facts.module_boundaries if not boundary.paths]
+    low_confidence_features = [
+        feature for feature in facts.feature_maps if feature.confidence == "low"
+    ]
+    unknown_languages = [file_fact for file_fact in facts.files if file_fact.language == "unknown"]
+    features_without_evidence = [feature for feature in facts.feature_maps if not feature.evidence]
+
+    sections = [
+        "# Quality Report\n",
+        "This report summarizes scan completeness and confidence. It is a release-readiness aid, not a claim of complete behavior understanding.\n",
+        "## Coverage\n",
+        f"- Files scanned: {len(facts.files)}",
+        f"- Unknown-language files: {len(unknown_languages)}",
+        f"- Commands detected: {len(facts.commands)}",
+        f"- Command feature maps: {len(command_features)}",
+        f"- Command features with implementation sources: {len(command_features_with_impl)} / {len(command_features)}",
+        f"- Command features with tests: {len(command_features_with_tests)} / {len(command_features)}",
+        f"- API links matched: {len(matched_api_links)} / {len(facts.api_links)}",
+        f"- API links unmatched: {len(unmatched_api_links)}",
+        f"- Tests matched: {len(matched_tests)} / {len(facts.test_maps)}",
+        f"- Tests unmatched: {len(unmatched_tests)}",
+        f"- Populated module boundaries: {len(populated_boundaries)} / {len(facts.module_boundaries)}",
+        f"- Empty module boundaries: {len(empty_boundaries)}",
+        f"- Low-confidence feature maps: {len(low_confidence_features)}",
+        f"- Feature maps without evidence: {len(features_without_evidence)}",
+        f"- Contract gaps: {len(facts.contract_gaps)}",
+        f"- Refactor findings: {len(facts.refactor_findings)}",
+        "",
+        "## Readiness Notes\n",
+        *_quality_notes(
+            command_features,
+            command_features_with_impl,
+            unmatched_api_links,
+            unmatched_tests,
+            low_confidence_features,
+            unknown_languages,
+            features_without_evidence,
+        ),
+    ]
+    return "\n".join(sections)
 
 
 def render_spec_diff(facts: ProjectFacts, previous_facts: ProjectFacts | None = None) -> str:
@@ -197,3 +267,41 @@ def _page_keys(facts: ProjectFacts) -> set[str]:
 
 def _model_keys(facts: ProjectFacts) -> set[str]:
     return {model.name for model in facts.data_models}
+
+
+def _quality_notes(
+    command_features: list,
+    command_features_with_impl: list,
+    unmatched_api_links: list,
+    unmatched_tests: list,
+    low_confidence_features: list,
+    unknown_languages: list,
+    features_without_evidence: list,
+) -> list[str]:
+    notes: list[str] = []
+    if command_features and len(command_features_with_impl) < len(command_features):
+        missing = len(command_features) - len(command_features_with_impl)
+        notes.append(f"- {missing} command feature(s) still need implementation-source confirmation.")
+    if unmatched_api_links:
+        notes.append("- Some frontend API calls are unmatched; keep them as external/missing until confirmed.")
+    if unmatched_tests:
+        notes.append("- Some tests are unmatched; use `test-map.md` before claiming behavior coverage.")
+    if low_confidence_features:
+        notes.append("- Some feature maps are low confidence; verify them manually before rebuild work.")
+    if unknown_languages:
+        notes.append("- Some files have unknown language; extend inventory rules if they matter.")
+    if features_without_evidence:
+        notes.append("- Some feature maps have no evidence; treat them as defects in the spec bundle.")
+    if not notes:
+        notes.append("- No obvious first-stage quality blockers were detected.")
+    return notes
+
+
+def _limited_code_list(values: list[str], limit: int) -> str:
+    visible = _code_list(values[:limit])
+    if not visible:
+        return ""
+    remaining = len(values) - limit
+    if remaining > 0:
+        return f"{visible}, `... {remaining} more`"
+    return visible

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import re
+
 from specforge.models import (
     ApiContractFact,
     ApiLinkFact,
     ApiRouteFact,
     AssetFact,
+    CommandFact,
     ComponentFact,
     ContractGapFact,
     DataLayerFact,
     DataModelFact,
+    EntrypointFact,
     Evidence,
     FileFact,
     FormFact,
@@ -26,6 +30,8 @@ from specforge.models import (
 
 def build_module_boundaries(
     files: list[FileFact],
+    entrypoints: list[EntrypointFact],
+    commands: list[CommandFact],
     pages: list[PageFact],
     components: list[ComponentFact],
     forms: list[FormFact],
@@ -41,6 +47,22 @@ def build_module_boundaries(
     state_usages: list[StateUsageFact],
     test_files: list[FileFact],
 ) -> list[ModuleBoundaryFact]:
+    file_paths = {fact.path for fact in files}
+    cli_paths = _dedupe(
+        [
+            *[command.path for command in commands],
+            *[
+                path
+                for command in commands
+                for path in _command_related_source_paths(command, files)
+            ],
+            *[
+                path
+                for entrypoint in entrypoints
+                if (path := _entrypoint_file_path(entrypoint, file_paths)) is not None
+            ],
+        ]
+    )
     frontend_paths = _dedupe(
         [
             *[page.path for page in pages],
@@ -62,14 +84,25 @@ def build_module_boundaries(
     )
     runtime_paths = _dedupe([fact.path for fact in runtime_configs])
     test_paths = _dedupe([fact.path for fact in test_files] + [test.test_path for test in test_maps])
-    known = set(frontend_paths + backend_paths + data_paths + runtime_paths + test_paths)
+    known = set(cli_paths + frontend_paths + backend_paths + data_paths + runtime_paths + test_paths)
     shared_paths = [
         fact.path
         for fact in files
-        if fact.role in {"source", "entrypoint"} and fact.path not in known
+        if fact.path not in known and _is_shared_source_candidate(fact)
     ]
 
     return [
+        _boundary(
+            "CLI Surface",
+            "cli",
+            cli_paths,
+            [
+                f"{len(entrypoints)} entrypoint(s)",
+                f"{len(commands)} command(s)",
+            ],
+            ["runtime-config", "shared"],
+            files,
+        ),
         _boundary(
             "Frontend Surface",
             "frontend",
@@ -210,6 +243,8 @@ def build_refactor_findings(
     for file_fact in files:
         if file_fact.size_bytes < 20000:
             continue
+        if not _is_large_file_refactor_candidate(file_fact):
+            continue
         findings.append(
             RefactorFindingFact(
                 title="Large file may need a module boundary",
@@ -298,6 +333,120 @@ def build_contract_gaps(
         )
 
     return gaps
+
+
+def _entrypoint_file_path(entrypoint: EntrypointFact, file_paths: set[str]) -> str | None:
+    candidates = [
+        entrypoint.path.replace("\\", "/"),
+        entrypoint.path.removeprefix("./").replace("\\", "/"),
+    ]
+    if ":" in entrypoint.path:
+        module = entrypoint.path.split(":", 1)[0].replace(".", "/")
+        candidates.extend([f"{module}.py", f"src/{module}.py"])
+    for candidate in candidates:
+        if candidate in file_paths:
+            return candidate
+    return None
+
+
+def _is_large_file_refactor_candidate(file_fact: FileFact) -> bool:
+    implementation_roles = {
+        "api",
+        "data-layer",
+        "data-model",
+        "entrypoint",
+        "frontend-page",
+        "repository",
+        "service",
+        "source",
+        "test",
+        "webapp",
+    }
+    non_implementation_languages = {
+        "dockerfile",
+        "font",
+        "gitignore",
+        "image",
+        "json",
+        "lockfile",
+        "markdown",
+        "svg",
+        "toml",
+        "yaml",
+        "yml",
+    }
+    path = file_fact.path.lower()
+    if file_fact.role not in implementation_roles:
+        return False
+    if file_fact.language in non_implementation_languages:
+        return False
+    if path.endswith(("package-lock.json", "pnpm-lock.yaml", "yarn.lock")):
+        return False
+    return True
+
+
+def _is_shared_source_candidate(file_fact: FileFact) -> bool:
+    if file_fact.role not in {"source", "entrypoint"}:
+        return False
+    non_source_languages = {
+        "config",
+        "dockerfile",
+        "font",
+        "gitignore",
+        "gradle",
+        "image",
+        "json",
+        "license",
+        "lockfile",
+        "markdown",
+        "nix",
+        "properties",
+        "svg",
+        "toml",
+        "xml",
+        "yaml",
+    }
+    path = file_fact.path.lower()
+    name = path.rsplit("/", 1)[-1]
+    if file_fact.language in non_source_languages:
+        return False
+    if path.startswith(("docs/", "openspec/", ".github/", ".changeset/")):
+        return False
+    if "config" in name or name in {"build.js", "build.ts"}:
+        return False
+    return True
+
+
+def _command_related_source_paths(command: CommandFact, files: list[FileFact]) -> list[str]:
+    command_tokens = _tokens(command.name)
+    if not command_tokens:
+        return []
+    paths: list[str] = []
+    for file_fact in files:
+        if file_fact.path == command.path or not _is_shared_source_candidate(file_fact):
+            continue
+        if _is_command_source_path(file_fact.path, command.name, command_tokens):
+            paths.append(file_fact.path)
+    return _dedupe(paths)
+
+
+def _is_command_source_path(path: str, command_name: str, command_tokens: set[str]) -> bool:
+    stem = path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+    if stem.startswith("__") and stem.endswith("__"):
+        return False
+    if stem == command_name.lower():
+        return True
+    return _tokens(stem) == command_tokens
+
+
+def _tokens(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {
+        item.lower()
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9]*", value)
+        if item.lower() not in {"api", "app", "src", "main", "test", "tests"}
+    }
 
 
 def _boundary(

@@ -35,6 +35,7 @@ from specforge.models import (
     ContractDetailFact,
     DataLayerFact,
     DataModelFact,
+    EntrypointFact,
     ExtractionIssue,
     FileFact,
     FormFact,
@@ -147,6 +148,7 @@ def scan_project(root: str | Path) -> ProjectFacts:
     connected_scan = _build_connected_surfaces(
         root_path,
         file_facts,
+        entrypoints,
         frameworks,
         language_scan,
         backend_scan,
@@ -286,6 +288,7 @@ def _scan_frontend_surfaces(
 def _build_connected_surfaces(
     root_path: Path,
     file_facts: list[FileFact],
+    entrypoints: list[EntrypointFact],
     frameworks: list[FrameworkFact],
     language_scan: LanguageScan,
     backend_scan: BackendScan,
@@ -338,7 +341,10 @@ def _build_connected_surfaces(
         state_usages=frontend_scan.state_usages,
     )
     feature_maps, module_boundaries, refactor_findings, contract_gaps = build_relationship_facts(
+        root_path,
         file_facts,
+        entrypoints,
+        language_scan.commands,
         frontend_scan.frontend_routes,
         frontend_scan.pages,
         frontend_scan.components,

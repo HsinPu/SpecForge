@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from specforge.extractors.relationship_insights import (
     build_contract_gaps,
@@ -13,10 +14,12 @@ from specforge.models import (
     ApiLinkFact,
     ApiRouteFact,
     AssetFact,
+    CommandFact,
     ComponentFact,
     ContractGapFact,
     DataLayerFact,
     DataModelFact,
+    EntrypointFact,
     Evidence,
     FeatureMapFact,
     FileFact,
@@ -35,7 +38,10 @@ from specforge.models import (
 
 
 def build_relationship_facts(
+    root_path: Path,
     files: list[FileFact],
+    entrypoints: list[EntrypointFact],
+    commands: list[CommandFact],
     frontend_routes: list[FrontendRouteFact],
     pages: list[PageFact],
     components: list[ComponentFact],
@@ -62,6 +68,10 @@ def build_relationship_facts(
 ]:
     contract_gaps = build_contract_gaps(api_contracts, api_links, api_routes)
     feature_maps = _build_feature_maps(
+        root_path,
+        files,
+        entrypoints,
+        commands,
         frontend_routes,
         pages,
         components,
@@ -77,6 +87,8 @@ def build_relationship_facts(
     )
     module_boundaries = build_module_boundaries(
         files,
+        entrypoints,
+        commands,
         pages,
         components,
         forms,
@@ -104,6 +116,10 @@ def build_relationship_facts(
 
 
 def _build_feature_maps(
+    root_path: Path,
+    files: list[FileFact],
+    entrypoints: list[EntrypointFact],
+    commands: list[CommandFact],
     frontend_routes: list[FrontendRouteFact],
     pages: list[PageFact],
     components: list[ComponentFact],
@@ -191,6 +207,7 @@ def _build_feature_maps(
                 tests=_dedupe(related_tests),
                 confidence=link.confidence,
                 evidence=evidence,
+                implementation_sources=[],
             )
         )
 
@@ -229,8 +246,82 @@ def _build_feature_maps(
                 tests=_dedupe(_related_tests(test_maps, tokens, [], [])),
                 confidence="low",
                 evidence=[route.evidence],
+                implementation_sources=[route.evidence.file],
             )
         )
+
+    for command in commands:
+        key = f"command:{command.path}:{command.name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens = _tokens(command.name)
+        related_tests = _related_tests(test_maps, tokens, [], [command.name])
+        implementation_sources, implementation_reasons = _command_implementation_matches(
+            root_path,
+            command,
+            files,
+        )
+        implementation_evidence = _evidence_for_paths(files, implementation_sources)
+        features.append(
+            FeatureMapFact(
+                name=f"Command {_title(command.name)}",
+                summary=_command_summary(command),
+                frontend_sources=[],
+                frontend_routes=[],
+                pages=[],
+                components=[],
+                forms=[],
+                api_calls=[],
+                backend_routes=[],
+                contracts=[],
+                services=[],
+                repositories=[],
+                data_models=[],
+                tests=_dedupe(related_tests),
+                confidence="high",
+                commands=[_command_label(command)],
+                implementation_sources=implementation_sources,
+                implementation_reasons=implementation_reasons,
+                evidence=_dedupe_evidence([command.evidence, *implementation_evidence]),
+            )
+        )
+
+    if not features:
+        for entrypoint in entrypoints:
+            label = entrypoint.command or entrypoint.path
+            key = f"entrypoint:{entrypoint.kind}:{label}:{entrypoint.path}"
+            if key in seen:
+                continue
+            seen.add(key)
+            tokens = _tokens(label)
+            tokens.update(_tokens(entrypoint.path))
+            features.append(
+                FeatureMapFact(
+                    name=f"Entrypoint {_title(label)}",
+                    summary=(
+                        f"Runtime entrypoint `{label}` is declared as `{entrypoint.kind}` "
+                        f"and points to `{entrypoint.path}`."
+                    ),
+                    frontend_sources=[],
+                    frontend_routes=[],
+                    pages=[],
+                    components=[],
+                    forms=[],
+                    api_calls=[],
+                    backend_routes=[],
+                    contracts=[],
+                    services=[],
+                    repositories=[],
+                    data_models=[],
+                    tests=_dedupe(_related_tests(test_maps, tokens, [], [])),
+                    confidence="medium",
+                    commands=[label],
+                    implementation_sources=[],
+                    implementation_reasons=[],
+                    evidence=[entrypoint.evidence],
+                )
+            )
 
     return features
 
@@ -312,6 +403,214 @@ def _contract_label(contract: ApiContractFact) -> str:
 
 def _call_label(call: ApiCallFact) -> str:
     return f"{call.method or 'ANY'} {call.endpoint}"
+
+
+def _command_label(command: CommandFact) -> str:
+    parts = [command.name, *command.arguments, *command.options]
+    return " ".join(part for part in parts if part)
+
+
+def _command_summary(command: CommandFact) -> str:
+    details: list[str] = []
+    if command.arguments:
+        details.append(f"arguments={', '.join(command.arguments)}")
+    if command.options:
+        details.append(f"options={', '.join(command.options)}")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    description = f" {command.description}" if command.description else ""
+    return f"CLI command `{command.name}` is declared in `{command.path}`.{description}{suffix}"
+
+
+def _command_implementation_matches(
+    root_path: Path,
+    command: CommandFact,
+    files: list[FileFact],
+) -> tuple[list[str], list[str]]:
+    matches: dict[str, str] = {command.path: "command declaration source"}
+    command_tokens = _tokens(command.name)
+    if not command_tokens:
+        return list(matches), list(matches.values())
+    candidates = [command.path]
+    for file_fact in files:
+        if file_fact.path == command.path or not _is_source_like(file_fact):
+            continue
+        if _is_command_source_path(file_fact.path, command.name, command_tokens):
+            candidates.append(file_fact.path)
+            matches.setdefault(
+                file_fact.path,
+                f"source filename matches command {command.name}",
+            )
+    action_matches = _command_action_import_matches(root_path, command, files)
+    for source, reason in action_matches:
+        candidates.append(source)
+        matches[source] = reason
+    sources = _dedupe(candidates)
+    return sources, [matches[source] for source in sources if source in matches]
+
+
+def _command_action_import_matches(
+    root_path: Path,
+    command: CommandFact,
+    files: list[FileFact],
+) -> list[tuple[str, str]]:
+    source_path = root_path / command.path
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    block = _command_block(source, command)
+    if not block:
+        return []
+    file_paths = {file_fact.path for file_fact in files}
+    matches: list[tuple[str, str]] = []
+    for specifier in _dynamic_import_specifiers(block):
+        resolved = _resolve_import_path(command.path, specifier, file_paths)
+        if resolved:
+            matches.append((resolved, f"action dynamically imports {specifier}"))
+    for symbol, specifier in _static_imports(source).items():
+        if symbol not in block:
+            continue
+        resolved = _resolve_import_path(command.path, specifier, file_paths)
+        if resolved:
+            matches.append((resolved, f"action uses imported symbol {symbol} from {specifier}"))
+    return _dedupe_pairs(matches)
+
+
+def _command_block(source: str, command: CommandFact) -> str:
+    start = _offset_for_line(source, command.evidence.line_start)
+    if start is None:
+        pattern = re.compile(rf"\.command\(\s*['\"]{re.escape(command.name)}(?:\s|['\"])", re.MULTILINE)
+        match = pattern.search(source)
+        if not match:
+            return ""
+        start = match.start()
+    end = _next_command_start(source, start + 1)
+    return source[start:end]
+
+
+def _offset_for_line(source: str, line: int | None) -> int | None:
+    if line is None or line < 1:
+        return None
+    offset = 0
+    for index, segment in enumerate(source.splitlines(keepends=True), start=1):
+        if index == line:
+            return offset
+        offset += len(segment)
+    return None
+
+
+def _next_command_start(source: str, start: int) -> int:
+    match = re.search(r"\n\s*[A-Za-z_$][\w$]*\s*\n\s*\.command\(", source[start:])
+    if match:
+        return start + match.start()
+    return min(len(source), start + 4000)
+
+
+def _dynamic_import_specifiers(block: str) -> list[str]:
+    return [
+        match.group("specifier")
+        for match in re.finditer(r"import\(\s*['\"](?P<specifier>[^'\"]+)['\"]\s*\)", block)
+    ]
+
+
+def _static_imports(source: str) -> dict[str, str]:
+    imports: dict[str, str] = {}
+    pattern = re.compile(
+        r"^\s*import\s+(?P<names>.+?)\s+from\s+['\"](?P<specifier>[^'\"]+)['\"]",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        specifier = match.group("specifier")
+        raw_names = match.group("names").strip()
+        for name in _imported_symbol_names(raw_names):
+            imports[name] = specifier
+    return imports
+
+
+def _imported_symbol_names(raw_names: str) -> list[str]:
+    if raw_names.startswith("{") and raw_names.endswith("}"):
+        names = raw_names[1:-1]
+        return [
+            part.strip().split(" as ")[-1].strip()
+            for part in names.split(",")
+            if part.strip()
+        ]
+    if raw_names.startswith("* as "):
+        return [raw_names.removeprefix("* as ").strip()]
+    default_name = raw_names.split(",", 1)[0].strip()
+    return [default_name] if default_name else []
+
+
+def _resolve_import_path(command_path: str, specifier: str, file_paths: set[str]) -> str | None:
+    if not specifier.startswith("."):
+        return None
+    base = Path(command_path).parent
+    candidate = (base / specifier).as_posix()
+    candidate = _normalize_posix_path(candidate)
+    suffixes = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".py"]
+    candidate_stems = [candidate]
+    if candidate.endswith((".js", ".mjs", ".jsx", ".ts", ".tsx")):
+        candidate_stems.append(str(Path(candidate).with_suffix("").as_posix()))
+    for stem in candidate_stems:
+        for suffix in suffixes:
+            path = stem if stem.endswith(suffix) and suffix else f"{stem}{suffix}"
+            if path in file_paths:
+                return path
+            index_path = f"{stem}/index{suffix}" if suffix else f"{stem}/index"
+            if index_path in file_paths:
+                return index_path
+    return None
+
+
+def _normalize_posix_path(path: str) -> str:
+    parts: list[str] = []
+    for part in path.replace("\\", "/").split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _dedupe_pairs(values: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for path, reason in values:
+        if path in seen:
+            continue
+        seen.add(path)
+        result.append((path, reason))
+    return result
+
+
+def _is_source_like(file_fact: FileFact) -> bool:
+    if file_fact.role not in {"source", "entrypoint", "api", "service", "repository", "data-model", "webapp"}:
+        return False
+    return file_fact.language not in {"json", "markdown", "yaml", "toml", "lockfile", "image", "font", "svg"}
+
+
+def _is_command_source_path(path: str, command_name: str, command_tokens: set[str]) -> bool:
+    stem = path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+    if stem.startswith("__") and stem.endswith("__"):
+        return False
+    if stem == command_name.lower():
+        return True
+    return _tokens(stem) == command_tokens
+
+
+def _evidence_for_paths(files: list[FileFact], paths: list[str]) -> list[Evidence]:
+    by_path = {file_fact.path: file_fact.evidence for file_fact in files}
+    return [by_path[path] for path in paths if path in by_path]
+
+
+def _title(value: str) -> str:
+    tokens = sorted(_tokens(value))
+    if not tokens:
+        return "General"
+    return " ".join(token.capitalize() for token in tokens[:3])
 
 
 def _dedupe(values: list[str]) -> list[str]:

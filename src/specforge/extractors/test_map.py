@@ -86,7 +86,7 @@ def _match_command(
 ) -> tuple[str, str, str] | None:
     for command in commands:
         name = command.name.lower()
-        if name and name in haystack:
+        if name and _contains_token(haystack, name):
             return "cli-command", command.name, "medium"
     return None
 
@@ -113,3 +113,7 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _contains_token(haystack: str, token: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", haystack) is not None

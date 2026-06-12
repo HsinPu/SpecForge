@@ -113,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             self.assertTrue((spec_out / "runtime-config.md").exists())
             self.assertTrue((spec_out / "test-map.md").exists())
             self.assertTrue((spec_out / "feature-map.md").exists())
+            self.assertTrue((spec_out / "quality-report.md").exists())
             self.assertTrue((spec_out / "rebuild-spec.md").exists())
             self.assertTrue((spec_out / "refactor-plan.md").exists())
             self.assertTrue((spec_out / "module-boundaries.md").exists())
@@ -161,6 +162,49 @@ program
             self.assertIn("Runner", {symbol.name for symbol in facts.symbols})
             self.assertIn("main", {symbol.name for symbol in facts.symbols})
             self.assertIn("scan", {command.name for command in facts.commands})
+
+    def test_source_file_named_test_map_is_not_treated_as_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "demo").mkdir(parents=True)
+            (root / "src" / "demo" / "test_map.py").write_text(
+                "def build_test_map():\n    return {}\n",
+                encoding="utf-8",
+            )
+            (root / "tests").mkdir()
+            (root / "tests" / "test_real.py").write_text("def test_real(): pass\n", encoding="utf-8")
+
+            facts = scan_project(root)
+            test_paths = {fact.path for fact in facts.test_files}
+
+            self.assertIn("tests/test_real.py", test_paths)
+            self.assertNotIn("src/demo/test_map.py", test_paths)
+
+    def test_command_test_map_uses_token_match_not_substring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "cli.py").write_text(
+                """
+import argparse
+
+
+def parser():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    init_parser = subparsers.add_parser("init")
+    return parser
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "tests").mkdir()
+            (root / "tests" / "test_initiative.py").write_text("def test_initiative(): pass\n", encoding="utf-8")
+
+            facts = scan_project(root)
+            test_map = {item.test_path: item for item in facts.test_maps}
+
+            self.assertEqual(test_map["tests/test_initiative.py"].target_kind, "unmatched")
 
     def test_scan_project_accepts_utf8_bom_package_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,6 +283,7 @@ program
             self.assertTrue((spec_out / "runtime-config.md").exists())
             self.assertTrue((spec_out / "test-map.md").exists())
             self.assertTrue((spec_out / "feature-map.md").exists())
+            self.assertTrue((spec_out / "quality-report.md").exists())
             self.assertTrue((spec_out / "rebuild-spec.md").exists())
             self.assertTrue((spec_out / "refactor-plan.md").exists())
             self.assertTrue((spec_out / "module-boundaries.md").exists())

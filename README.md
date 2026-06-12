@@ -1,30 +1,10 @@
 # SpecForge
 
-SpecForge 是一個 evidence-first 的 codebase-to-spec 工具。
+SpecForge 是一個 evidence-first 的 codebase-to-spec 掃描工具。
 
-它會掃描一個專案，產生一份人和 LLM 都看得懂的 spec bundle。掃描過程不使用 LLM，所有結論都盡量附上來源檔案與行號；掃不到的地方會列成 gap。
+它會把一個既有專案掃描成一份 spec bundle，讓人和 LLM 都能看懂專案目前的骨架、入口、前後端 surface、API、資料層、測試、設定與缺口。SpecForge 本身不使用 LLM，也不強制依賴 tree-sitter、Babel 或其他 parser；目前以 Python 零依賴規則抽取為主。
 
-## 目前定位
-
-SpecForge v0.2 主要做兩件事：
-
-```text
-v0.1: 掃描全端專案骨架
-v0.2: 把掃到的骨架串成可重構 / 可重建的關聯 spec
-```
-
-它會嘗試把這條鏈串起來：
-
-```text
-Page / Component / Form
--> API Call
--> Backend Route
--> API Contract
--> Service / Repository / Data Model
--> Test Evidence
-```
-
-## 一鍵安裝
+## 安裝
 
 Windows:
 
@@ -58,7 +38,7 @@ Linux / macOS:
 curl -fsSL https://raw.githubusercontent.com/HsinPu/SpecForge/main/scripts/uninstall.sh | bash
 ```
 
-解除安裝只移除 `specforge` 指令與安裝目錄，不會刪你的專案裡的 `.specforge` 或 `specforge-output`。
+解除安裝只會移除 `specforge` 指令，不會刪除專案裡已產生的 `.specforge` 或 `specforge-output`。
 
 ## 使用方式
 
@@ -69,45 +49,52 @@ cd your-project
 specforge init
 ```
 
-之後更新 spec：
+更新既有 spec：
 
 ```bash
 specforge update
 ```
 
-如果已經有 `.specforge` 或 `specforge-output`，`init` 會停止，避免覆蓋既有結果。要刷新請用：
-
-```bash
-specforge update
-```
-
-真的要重新初始化：
+如果已經存在 `.specforge` 或 `specforge-output`，再次執行 `init` 會要求你改用 `update`。需要覆寫初始化時可以使用：
 
 ```bash
 specforge init --force
 ```
 
-## 輸出在哪
+## 產生位置
 
-預設會產生在被掃描的專案底下：
+SpecForge 預設會在被掃描專案底下產生：
 
 ```text
 your-project/.specforge/          facts.json, traceability.json, gaps.json
 your-project/specforge-output/    Markdown spec bundle
 ```
 
-`.specforge` 偏向工具讀取，`specforge-output` 是給人和 LLM 看的。
+`.specforge` 是機器可讀的掃描資料；`specforge-output` 是人和 LLM 可讀的 Markdown 規格文件。
 
-## 建議閱讀順序
+## 目前可以掃描什麼
 
-先看總覽：
+- Python / JavaScript / TypeScript / Java 的基礎 symbols、imports、commands
+- CLI entrypoints 與 command rebuild targets
+- Express、Next API、FastAPI、Flask、Spring MVC、Servlet routes
+- React、Vue、Next、HTML、JSP、forms、CSS、assets、state usage
+- Spring / Maven、Servlet / JSP、JPA entity、repository、service
+- SQL、Prisma、Drizzle、MyBatis、SQLAlchemy、Django model 基礎訊號
+- `.env.example`、Dockerfile、docker-compose、GitHub Actions、Spring / Vite / Next config
+- frontend API call 到 backend route 的保守連結
+- test map、runtime config、contract gaps、evidence trace
+
+## 主要輸出文件
+
+總覽與架構：
 
 ```text
 overview.md
 architecture.md
+quality-report.md
 ```
 
-看全端骨架：
+骨架與 surface：
 
 ```text
 backend.md
@@ -122,7 +109,7 @@ runtime-config.md
 test-map.md
 ```
 
-看 v0.2 重構 / 重建文件：
+重建與 LLM handoff：
 
 ```text
 feature-map.md
@@ -131,40 +118,17 @@ module-boundaries.md
 contract-gaps.md
 refactor-plan.md
 spec-diff.md
+implementation-guide.md
 llm-handoff.md
 ```
 
-## 目前可掃描的內容
+## 重要原則
 
-- Python / JavaScript / TypeScript / Java 基礎 symbols、imports、commands
-- Express、Next API、FastAPI、Flask、Spring MVC、Servlet routes
-- React、Vue、Next、HTML、JSP、forms、CSS、assets、state usage
-- Spring / Maven、Servlet / JSP、JPA entity、repository、service
-- SQL、Prisma、Drizzle、MyBatis、SQLAlchemy、Django model
-- `.env.example`、Dockerfile、docker-compose、GitHub Actions、Spring / Vite / Next config
-- frontend API call 對 backend route 的初步關聯
-- API contract skeleton、test map、runtime config、gaps、evidence trace
-
-## v0.2 新增了什麼
-
-- `feature-map.md`: 把前端 API call、後端 route、contract、data/test evidence 組成功能切片
-- `rebuild-spec.md`: 給人或 LLM 的重建順序
-- `refactor-plan.md`: 保守列出重構提醒
-- `module-boundaries.md`: 粗分 frontend、backend API、data layer、runtime config、tests、shared source
-- `contract-gaps.md`: 集中列出 unknown request、response、status、error、unmatched API
-- `spec-diff.md`: `update` 時比較上一份 facts，列出新增或移除的 route、API call、component、page、model
-
-## 限制
-
-- 不會完整理解業務邏輯
-- 不會保證完整 call graph
-- 不會推論 auth/security、DB side effects、transaction、完整 user flow
-- 不會讀取 secret value，只列 key name
-- 沒有 evidence 的內容不能當事實，只能當 gap 或 unknown
-
-## 版本紀錄
-
-版本變更請看 [CHANGELOG.md](CHANGELOG.md)。
+- 只有有 evidence 的內容才會被當成事實。
+- 掃不到的 request、response、auth、DB side effects、user flow 會留在 gaps 或 unknown。
+- 目前第一階段重點是「專案骨架與關聯」，不是完整業務邏輯理解。
+- API、測試、command implementation 的關聯都是保守推斷，會附上 confidence 或 match reason。
+- Secret value 不會被輸出；runtime config 只列 key name 或設定訊號。
 
 ## License
 

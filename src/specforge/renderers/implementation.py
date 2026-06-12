@@ -87,9 +87,12 @@ def render_implementation_guide(facts: ProjectFacts, gaps: list[Gap]) -> str:
         for item in facts.test_maps
     ) or "- no test map entries generated"
     feature_map = "\n".join(
-        f"- {feature.name}: calls=[{', '.join(feature.api_calls) or 'none'}] "
+        f"- {feature.name}: commands=[{', '.join(feature.commands) or 'none'}] "
+        f"implementation=[{_join_limited(feature.implementation_sources, 8) or 'unknown'}] "
+        f"reasons=[{_join_limited(feature.implementation_reasons, 8) or 'unknown'}] "
+        f"calls=[{', '.join(feature.api_calls) or 'none'}] "
         f"routes=[{', '.join(feature.backend_routes) or 'none'}] "
-        f"tests=[{', '.join(feature.tests) or 'unknown'}]"
+        f"tests=[{_join_limited(feature.tests, 12) or 'unknown'}]"
         for feature in facts.feature_maps
     ) or "- no feature map entries generated"
     module_boundaries = "\n".join(
@@ -244,6 +247,10 @@ You are implementing a project from a SpecForge evidence-backed spec bundle.
 
 Recreate the project `{facts.name}` from the spec bundle, preserving observable behavior and public interfaces before changing architecture.
 
+## Project Shape Hint
+
+{_project_shape_hint(facts)}
+
 ## Source Of Truth Order
 
 1. `facts.json` and `traceability.json` for observed facts.
@@ -310,3 +317,30 @@ Recreate the project `{facts.name}` from the spec bundle, preserving observable 
 
 Implement `{facts.name}` from this SpecForge bundle. First summarize feature-map entries, rebuild targets, module boundaries, refactor findings, contract gaps, backend routes, frontend routes/screens, pages/forms/components, API calls, API links, unmatched API calls, unmatched backend routes, API contracts with unknown request/response/status/error fields, Java Web Servlet/JSP surface, state usage, styles, assets, data models, data layer, runtime config, public entrypoints, commands, modules, symbols, test map, unmatched tests, spec diff, and unresolved gaps. Then propose an implementation plan that preserves observed behavior before writing code.
 """
+
+
+def _project_shape_hint(facts: ProjectFacts) -> str:
+    has_cli = bool(facts.commands or facts.entrypoints)
+    has_backend = bool(facts.api_routes or facts.api_contracts)
+    has_frontend = bool(facts.frontend_routes or facts.pages or facts.components)
+    if has_cli and not has_backend and not has_frontend:
+        return (
+            "- This scan looks CLI/library-oriented: prioritize `commands.md`, "
+            "`entrypoints.md`, `modules.md`, `symbols.md`, `tests.md`, and `test-map.md`.\n"
+            "- Treat `feature-map.md` command entries as rebuild slices even when API links are empty."
+        )
+    if has_backend or has_frontend:
+        return (
+            "- This scan has application surfaces: prioritize `api-links.md`, `feature-map.md`, "
+            "`backend.md`, frontend/page documents, data/config, then tests."
+        )
+    return (
+        "- This scan has no strong application surface yet: prioritize inventory, entrypoints, "
+        "modules, symbols, runtime config, tests, and unresolved gaps."
+    )
+
+
+def _join_limited(values: list[str], limit: int) -> str:
+    visible = values[:limit]
+    suffix = f", ... {len(values) - limit} more" if len(values) > limit else ""
+    return ", ".join(visible) + suffix if visible else ""
