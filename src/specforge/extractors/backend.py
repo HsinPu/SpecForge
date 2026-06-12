@@ -64,7 +64,7 @@ def extract_backend_facts(
 ) -> tuple[list[ApiRouteFact], list[BackendSurfaceFact]]:
     routes: list[ApiRouteFact] = []
     for file_fact in files:
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample"}:
             continue
         normalized = file_fact.path.replace("\\", "/")
         if file_fact.language in {"typescript", "javascript"}:

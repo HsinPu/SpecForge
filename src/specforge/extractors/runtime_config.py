@@ -12,7 +12,7 @@ def extract_runtime_config_facts(root: Path, files: list[FileFact]) -> list[Runt
     for file_fact in files:
         normalized = file_fact.path.replace("\\", "/")
         name = Path(normalized).name
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample"}:
             continue
         path = root / file_fact.path
         if not path.exists():

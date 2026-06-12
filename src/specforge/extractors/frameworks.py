@@ -15,6 +15,7 @@ FRONTEND_FRAMEWORKS = {
     "jsp",
     "mustache",
     "next",
+    "angular",
     "pug",
     "pinia",
     "react",
@@ -44,6 +45,7 @@ def detect_frameworks(
         name = dependency.name.lower()
         candidates = [
             ("react", "frontend", name == "react" or name.startswith("react@")),
+            ("angular", "frontend", name in {"@angular/core", "@angular/router"} or name.startswith("@angular/")),
             ("next", "frontend", name == "next" or name.startswith("next@")),
             ("vue", "frontend", name == "vue" or name.startswith("vue@")),
             ("vite", "frontend", name == "vite" or name.startswith("vite@")),
@@ -98,6 +100,7 @@ def detect_frameworks(
             ("next", "frontend", lower.startswith("pages/") or lower.startswith("app/")),
             ("vue", "frontend", lower.endswith(".vue")),
             ("react", "frontend", lower.endswith(".tsx") or lower.endswith(".jsx")),
+            ("angular", "frontend", lower.endswith((".component.ts", ".component.html", ".module.ts"))),
             ("static-site", "frontend", lower.endswith((".html", ".htm")) or lower.startswith(("public/", "static/"))),
             ("html", "frontend", lower.endswith((".html", ".htm"))),
             ("freemarker", "frontend", lower.endswith(".ftl")),
@@ -136,6 +139,8 @@ def detect_frameworks(
         module = (import_fact.module or "").lower()
         if module.startswith("react"):
             _add(detected, "react", "frontend", "import", 0.85, import_fact.evidence)
+        if module.startswith("@angular/"):
+            _add(detected, "angular", "frontend", "import", 0.85, import_fact.evidence)
         if module.startswith("next"):
             _add(detected, "next", "frontend", "import", 0.85, import_fact.evidence)
         if module.startswith("vue"):

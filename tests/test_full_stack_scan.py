@@ -363,6 +363,7 @@ client.post("/api/profile");
 import { useState } from 'react';
 import { useSelector } from 'react-redux';
 import { create } from 'zustand';
+import { Route } from 'react-router-dom';
 
 const useStore = create((set) => ({ count: 0 }));
 const routes = [{ path: '/settings' }];
@@ -371,7 +372,7 @@ export function App() {
   useState(0);
   useSelector((state) => state.user);
   fetch('/api/settings');
-  return <div />;
+  return <Route path="/settings" element={<div />} />;
 }
 """.strip(),
                 encoding="utf-8",
@@ -786,6 +787,327 @@ interface UserMapper {}
             self.assertIn("unknown-error", (spec_out / "contract-gaps.md").read_text(encoding="utf-8"))
             self.assertIn("Frontend Surface", (spec_out / "module-boundaries.md").read_text(encoding="utf-8"))
             self.assertIn("No previous fact bundle", (spec_out / "spec-diff.md").read_text(encoding="utf-8"))
+
+    def test_scan_project_filters_sample_paths_and_scopes_router_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                """
+{
+  "dependencies": {
+    "@angular/core": "^20.0.0",
+    "@angular/router": "^20.0.0",
+    "react": "^18.0.0",
+    "react-router-dom": "^6.0.0"
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            (root / "src" / "App.tsx").write_text(
+                """
+import { Route } from 'react-router-dom';
+
+export function App() {
+  return <Route path="/settings" element={<div />} />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "src" / "angular-routes.ts").write_text(
+                """
+import { Routes } from '@angular/router';
+
+export const routes: Routes = [
+  { path: 'guide/forms', component: FormsPage },
+];
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / ".github" / "actions" / "deploy").mkdir(parents=True)
+            (root / ".github" / "actions" / "deploy" / "main.js").write_text(
+                """
+const options = { path: './manifest' };
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "compiler" / "fixtures").mkdir(parents=True)
+            (root / "compiler" / "fixtures" / "FixtureComponent.tsx").write_text(
+                """
+export function FixtureComponent() {
+  return <div />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "examples" / "demo" / "app").mkdir(parents=True)
+            (root / "examples" / "demo" / "app" / "page.tsx").write_text(
+                """
+export default function ExamplePage() {
+  return <main />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "scripts").mkdir()
+            (root / "scripts" / "eslint-plugin-react-hooks-test-cases.js").write_text(
+                """
+export function CaseComponent() {
+  return <div />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "packages" / "next-codemod" / "bin" / "__testfixtures__" / "mixed-router" / "app").mkdir(parents=True)
+            (root / "packages" / "next-codemod" / "bin" / "__testfixtures__" / "mixed-router" / "app" / "page.tsx").write_text(
+                """
+export default function TestFixturePage() {
+  return <main />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "src" / "main" / "resources" / "hudson" / "model" / "Thing").mkdir(parents=True)
+            (root / "src" / "main" / "resources" / "hudson" / "model" / "Thing" / "help-name.html").write_text(
+                "<html><body>Help text</body></html>\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "main" / "resources" / "hudson" / "model" / "Thing" / "help.html").write_text(
+                "<html><body>More help text</body></html>\n",
+                encoding="utf-8",
+            )
+            (root / "war" / "src" / "main" / "webapp" / "help" / "LogRecorder").mkdir(parents=True)
+            (root / "war" / "src" / "main" / "webapp" / "help" / "LogRecorder" / "logger.html").write_text(
+                "<html><body>Webapp help text</body></html>\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "__tests__").mkdir()
+            (root / "src" / "__tests__" / "Example.spec.tsx").write_text(
+                """
+export function Example() {
+  return <div />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            facts = scan_project(root)
+            routes = {(route.route, route.framework, route.kind) for route in facts.frontend_routes}
+            components = {component.name for component in facts.components}
+            page_paths = {page.path for page in facts.pages}
+            test_paths = {file.path for file in facts.test_files}
+            sample_paths = {file.path for file in facts.files if file.role == "sample"}
+            documentation_paths = {file.path for file in facts.files if file.role == "documentation"}
+
+            self.assertIn(("/settings", "react", "react-router-route"), routes)
+            self.assertIn(("/guide/forms", "angular", "angular-route"), routes)
+            self.assertNotIn(("./manifest", "react", "react-router-route"), routes)
+            self.assertNotIn("FixtureComponent", components)
+            self.assertNotIn("ExamplePage", components)
+            self.assertNotIn("CaseComponent", components)
+            self.assertNotIn("TestFixturePage", components)
+            self.assertNotIn("Example", components)
+            self.assertIn("compiler/fixtures/FixtureComponent.tsx", sample_paths)
+            self.assertIn("examples/demo/app/page.tsx", sample_paths)
+            self.assertNotIn("compiler/fixtures/FixtureComponent.tsx", test_paths)
+            self.assertIn("scripts/eslint-plugin-react-hooks-test-cases.js", test_paths)
+            self.assertIn("packages/next-codemod/bin/__testfixtures__/mixed-router/app/page.tsx", test_paths)
+            self.assertIn("src/__tests__/Example.spec.tsx", test_paths)
+            self.assertIn("src/main/resources/hudson/model/Thing/help-name.html", documentation_paths)
+            self.assertIn("src/main/resources/hudson/model/Thing/help.html", documentation_paths)
+            self.assertIn("war/src/main/webapp/help/LogRecorder/logger.html", documentation_paths)
+            self.assertNotIn("src/main/resources/hudson/model/Thing/help-name.html", page_paths)
+            self.assertNotIn("src/main/resources/hudson/model/Thing/help.html", page_paths)
+            self.assertNotIn("war/src/main/webapp/help/LogRecorder/logger.html", page_paths)
+
+    def test_scan_project_detects_react_js_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                """
+{
+  "dependencies": {
+    "react": "^18.0.0"
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            components_dir = root / "src" / "components"
+            components_dir.mkdir(parents=True)
+            (components_dir / "ArticleList.js").write_text(
+                """
+import React from 'react';
+
+const ArticleList = props => {
+  return (
+    <div>
+      {props.articles.map(article => <span>{article.title}</span>)}
+    </div>
+  );
+};
+
+export default ArticleList;
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "src" / "reducers.js").write_text(
+                """
+const SessionReducer = (state, action) => {
+  return state;
+};
+""".strip(),
+                encoding="utf-8",
+            )
+
+            facts = scan_project(root)
+
+            self.assertIn("ArticleList", {component.name for component in facts.components})
+            self.assertNotIn("SessionReducer", {component.name for component in facts.components})
+
+    def test_scan_project_detects_nested_next_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                """
+{
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.0.0"
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            root_app_dir = root / "dashboard" / "final-example" / "app"
+            root_app_dir.mkdir(parents=True)
+            (root_app_dir / "page.tsx").write_text(
+                "export default function Page() { return <main />; }\n",
+                encoding="utf-8",
+            )
+            overview_dir = root / "dashboard" / "final-example" / "app" / "dashboard" / "(overview)"
+            overview_dir.mkdir(parents=True)
+            (overview_dir / "page.tsx").write_text(
+                "export default function Page() { return <main />; }\n",
+                encoding="utf-8",
+            )
+            edit_dir = root / "dashboard" / "final-example" / "app" / "dashboard" / "invoices" / "[id]" / "edit"
+            edit_dir.mkdir(parents=True)
+            (edit_dir / "page.tsx").write_text(
+                "export default function Page() { return <main />; }\n",
+                encoding="utf-8",
+            )
+            pages_dir = root / "demo" / "with-pages" / "pages" / "customers"
+            pages_dir.mkdir(parents=True)
+            (pages_dir / "[id].js").write_text(
+                "export default function CustomerPage() { return <main />; }\n",
+                encoding="utf-8",
+            )
+            pages_root = root / "demo" / "with-pages" / "pages"
+            (pages_root / "index.js").write_text(
+                "export default function HomePage() { return <main />; }\n",
+                encoding="utf-8",
+            )
+            (pages_root / "_app.js").write_text(
+                "export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }\n",
+                encoding="utf-8",
+            )
+            internal_pages_dir = root / "packages" / "next" / "src" / "server" / "normalizers" / "built" / "pages"
+            internal_pages_dir.mkdir(parents=True)
+            (internal_pages_dir / "page-normalizer.ts").write_text(
+                "export function normalize() { return '/internal'; }\n",
+                encoding="utf-8",
+            )
+            nested_src_pages_dir = root / "apps" / "web" / "src" / "pages"
+            nested_src_pages_dir.mkdir(parents=True)
+            (nested_src_pages_dir / "about.tsx").write_text(
+                "export default function AboutPage() { return <main />; }\n",
+                encoding="utf-8",
+            )
+
+            facts = scan_project(root)
+            routes = {route.route for route in facts.frontend_routes}
+
+            self.assertIn("/", routes)
+            self.assertIn("/about", routes)
+            self.assertIn("/dashboard", routes)
+            self.assertIn("/dashboard/invoices/:id/edit", routes)
+            self.assertIn("/customers/:id", routes)
+            self.assertNotIn("/index", routes)
+            self.assertNotIn("/_app", routes)
+            self.assertNotIn("/page-normalizer", routes)
+
+    def test_scan_project_distinguishes_django_models_and_migrations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_dir = root / "catalog"
+            migration_dir = catalog_dir / "migrations"
+            migration_dir.mkdir(parents=True)
+            (catalog_dir / "models.py").write_text(
+                """
+from django.db import models
+
+class Book(models.Model):
+    title = models.CharField(max_length=200)
+""".strip(),
+                encoding="utf-8",
+            )
+            (catalog_dir / "apps.py").write_text(
+                """
+from django.apps import AppConfig
+
+class CatalogConfig(AppConfig):
+    name = 'catalog'
+""".strip(),
+                encoding="utf-8",
+            )
+            (migration_dir / "0001_initial.py").write_text(
+                """
+from django.db import migrations, models
+
+class Migration(migrations.Migration):
+    operations = [
+        migrations.CreateModel(
+            name='Book',
+            fields=[('id', models.AutoField(primary_key=True))],
+        ),
+    ]
+""".strip(),
+                encoding="utf-8",
+            )
+            settings_dir = root / "locallibrary"
+            settings_dir.mkdir()
+            (settings_dir / "settings.py").write_text(
+                """
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+    }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            facts = scan_project(root)
+            data_layers = {(fact.path, fact.kind, tuple(fact.details)) for fact in facts.data_layers}
+
+            self.assertIn(("catalog/models.py", "django-model", ("model:Book",)), data_layers)
+            self.assertTrue(
+                any(
+                    path == "catalog/migrations/0001_initial.py"
+                    and kind == "django-migration"
+                    and "operation:CreateModel" in details
+                    for path, kind, details in data_layers
+                )
+            )
+            self.assertFalse(
+                any(
+                    path in {"catalog/apps.py", "locallibrary/settings.py", "catalog/migrations/0001_initial.py"}
+                    and kind == "django-model"
+                    for path, kind, _details in data_layers
+                )
+            )
 
 
 if __name__ == "__main__":

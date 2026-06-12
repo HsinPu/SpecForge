@@ -75,7 +75,7 @@ def extract_java_web_facts(
     services: list[ServiceFact] = []
 
     for file_fact in files:
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample"}:
             continue
         normalized = file_fact.path.replace("\\", "/")
         if file_fact.language == "java":

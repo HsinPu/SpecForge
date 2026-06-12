@@ -16,7 +16,7 @@ def extract_data_layer_facts(
     facts: list[DataLayerFact] = []
 
     for file_fact in files:
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample"}:
             continue
         normalized = file_fact.path.replace("\\", "/")
         path = root / file_fact.path
@@ -145,8 +145,26 @@ def _python_data_facts(file_fact: FileFact, source: str) -> list[DataLayerFact]:
                 evidence=Evidence(file=file_fact.path, kind="data-layer", line_start=_line_for_text(source, "sqlalchemy") or _line_for_text(source, "Column("), line_end=_line_for_text(source, "sqlalchemy") or _line_for_text(source, "Column(")),
             )
         )
-    if "models.Model" in source or "django.db" in source:
+    if _looks_like_django_migration(file_fact.path, source):
+        operations = re.findall(r"\bmigrations\.(CreateModel|AddField|AlterField|RemoveField|RunPython|RunSQL)\b", source)
+        facts.append(
+            DataLayerFact(
+                path=file_fact.path,
+                kind="django-migration",
+                name=Path(file_fact.path).stem,
+                details=_dedupe([f"operation:{name}" for name in operations] or ["migration"]),
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="data-layer",
+                    line_start=_line_for_text(source, "migrations.Migration"),
+                    line_end=_line_for_text(source, "migrations.Migration"),
+                ),
+            )
+        )
+    if "models.Model" in source:
         classes = re.findall(r"^\s*class\s+([A-Za-z_]\w*)\s*\([^)]*models\.Model[^)]*\)", source, re.MULTILINE)
+        if not classes:
+            return facts
         facts.append(
             DataLayerFact(
                 path=file_fact.path,
@@ -157,6 +175,11 @@ def _python_data_facts(file_fact: FileFact, source: str) -> list[DataLayerFact]:
             )
         )
     return facts
+
+
+def _looks_like_django_migration(path: str, source: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return "/migrations/" in f"/{normalized}" and "migrations.Migration" in source
 
 
 def _existing_data_model_facts(data_models: list[DataModelFact]) -> list[DataLayerFact]:

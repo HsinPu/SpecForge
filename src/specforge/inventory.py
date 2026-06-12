@@ -150,6 +150,10 @@ def classify_role(relative_path: str) -> str:
     name = Path(lower).name
     if is_test_path(lower):
         return "test"
+    if is_sample_path(lower):
+        return "sample"
+    if is_resource_help_page(lower):
+        return "documentation"
     if name in CONFIG_NAMES or lower.startswith(".github/workflows/"):
         return "config"
     if lower.endswith(".sql") or lower.endswith("schema.prisma") or lower.endswith("mapper.xml"):
@@ -191,14 +195,64 @@ def is_test_path(relative_path: str) -> bool:
     is_root_python_test = "/" not in normalized and (
         name.startswith("test_") or name.endswith("_test.py")
     )
+    is_test_named_source = name.endswith(
+        (
+            ".test.ts",
+            ".test.tsx",
+            ".test.js",
+            ".test.jsx",
+            ".spec.ts",
+            ".spec.tsx",
+            ".spec.js",
+            ".spec.jsx",
+            ".e2e.ts",
+            ".e2e.tsx",
+            ".e2e.js",
+            ".e2e.jsx",
+        )
+    ) or "test-cases" in name or "test_cases" in name
     return (
         normalized.startswith("test/")
         or normalized.startswith("tests/")
         or "/test/" in normalized
         or "/tests/" in normalized
+        or "__tests__" in normalized.split("/")
+        or "__mocks__" in normalized.split("/")
+        or "__testfixtures__" in normalized.split("/")
+        or "testfixtures" in normalized.split("/")
+        or "test-fixtures" in normalized.split("/")
         or is_root_python_test
-        or name.endswith(".test.ts")
-        or name.endswith(".test.js")
+        or is_test_named_source
+    )
+
+
+def is_sample_path(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lower()
+    parts = normalized.split("/")
+    return any(
+        part in {"fixtures", "fixture", "bench", "benchmark", "benchmarks", "evals", "examples"}
+        or part.startswith("benchmark-")
+        for part in parts
+    )
+
+
+def is_resource_help_page(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lower()
+    name = Path(normalized).name
+    return (
+        (
+            "/src/main/resources/" in f"/{normalized}"
+            or "/src/main/webapp/help/" in f"/{normalized}"
+            or "/war/src/main/webapp/help/" in f"/{normalized}"
+        )
+        and name.endswith(".html")
+        and (
+            name == "help.html"
+            or name.startswith("help-")
+            or name.startswith("help_")
+            or "/src/main/webapp/help/" in f"/{normalized}"
+            or "/war/src/main/webapp/help/" in f"/{normalized}"
+        )
     )
 
 def collect_dependencies(root: Path) -> list[DependencyFact]:

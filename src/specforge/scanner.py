@@ -20,7 +20,6 @@ from specforge.inventory import (
     collect_dependencies,
     collect_entrypoints,
     file_fact,
-    is_test_path,
     iter_source_files,
 )
 from specforge.models import (
@@ -304,7 +303,7 @@ def _build_connected_surfaces(
     )
     runtime_configs = extract_runtime_config_facts(root_path, file_facts)
     config_files = [fact for fact in file_facts if fact.role == "config"]
-    test_files = [fact for fact in file_facts if is_test_path(fact.path)]
+    test_files = [fact for fact in file_facts if fact.role == "test"]
     test_maps = build_test_maps(
         root_path,
         test_files,

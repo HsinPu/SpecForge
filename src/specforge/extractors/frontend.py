@@ -24,7 +24,7 @@ CLIENT_CALL_RE = re.compile(
     re.IGNORECASE,
 )
 HOOK_RE = re.compile(r"\b(use[A-Z]\w*)\s*\(")
-ROUTER_PATH_RE = re.compile(r"\bpath\s*[:=]\s*['\"](?P<route>[^'\"]+)['\"]")
+ROUTER_PATH_RE = re.compile(r"\bpath\s*[:=]\s*['\"](?P<route>[^'\"\r\n]+)['\"]")
 PROPS_INTERFACE_RE = re.compile(r"(?:interface|type)\s+(?P<name>[A-Za-z_$][\w$]*Props)\s*(?:=)?\s*{(?P<body>[^}]+)}", re.DOTALL)
 PROP_NAME_RE = re.compile(r"(?P<name>[A-Za-z_$][\w$]*)\??\s*:")
 STATE_PATTERNS = [
@@ -56,7 +56,7 @@ def extract_frontend_facts(
     frontend_frameworks = {item.name for item in frameworks if item.category == "frontend"}
 
     for file_fact in files:
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample"}:
             continue
         normalized = file_fact.path.replace("\\", "/")
         if not _is_frontend_candidate(normalized, frontend_frameworks):
@@ -85,20 +85,49 @@ def _extract_frontend_routes(
 ) -> list[FrontendRouteFact]:
     routes: list[FrontendRouteFact] = []
     normalized = file_fact.path.replace("\\", "/")
-    if normalized.startswith("pages/") and not normalized.startswith("pages/api/"):
-        route = normalized.removeprefix("pages/").rsplit(".", 1)[0]
-        routes.append(_route(file_fact, _page_route(route), "next", "next-pages-route", 1))
-    if normalized.startswith("app/") and "/api/" not in normalized and normalized.endswith("/page.tsx"):
-        route = normalized.removeprefix("app/").removesuffix("/page.tsx")
-        routes.append(_route(file_fact, _page_route(route), "next", "next-app-route", 1))
+    next_route = _next_route_for_path(normalized)
+    if next_route:
+        route, kind = next_route
+        routes.append(_route(file_fact, route, "next", kind, 1))
     if normalized.endswith(".vue"):
         routes.append(_route(file_fact, _page_route(Path(normalized).stem), "vue", "vue-component-route", 1))
-    if {"react", "vite", "next"} & frontend_frameworks:
+    if _should_extract_angular_routes(source, frontend_frameworks):
         for match in ROUTER_PATH_RE.finditer(source):
+            route_value = match.group("route")
+            if not _looks_like_route_value(route_value):
+                continue
             routes.append(
                 _route(
                     file_fact,
-                    match.group("route"),
+                    _normalize_frontend_route(route_value),
+                    "angular",
+                    "angular-route",
+                    _line_for_offset(source, match.start()),
+                )
+            )
+    elif _should_extract_vue_router_routes(source, frontend_frameworks):
+        for match in ROUTER_PATH_RE.finditer(source):
+            route_value = match.group("route")
+            if not _looks_like_route_value(route_value):
+                continue
+            routes.append(
+                _route(
+                    file_fact,
+                    _normalize_frontend_route(route_value),
+                    "vue",
+                    "vue-router-route",
+                    _line_for_offset(source, match.start()),
+                )
+            )
+    elif _should_extract_react_router_routes(source, frontend_frameworks):
+        for match in ROUTER_PATH_RE.finditer(source):
+            route_value = match.group("route")
+            if not _looks_like_route_value(route_value):
+                continue
+            routes.append(
+                _route(
+                    file_fact,
+                    _normalize_frontend_route(route_value),
                     "react",
                     "react-router-route",
                     _line_for_offset(source, match.start()),
@@ -132,7 +161,9 @@ def _extract_components(
         )
         return components
 
-    if not normalized.endswith((".tsx", ".jsx")):
+    if not normalized.endswith((".tsx", ".jsx", ".js", ".mjs")):
+        return []
+    if normalized.endswith((".js", ".mjs")) and not _looks_like_react_component_source(source):
         return []
 
     for symbol in symbols:
@@ -278,7 +309,7 @@ def build_frontend_surfaces(
 
 
 def _is_frontend_candidate(path: str, frontend_frameworks: set[str]) -> bool:
-    if path.startswith(("pages/", "app/")) or path.endswith(".vue"):
+    if _next_route_for_path(path) or path.endswith(".vue"):
         return True
     if frontend_frameworks and path.endswith((".tsx", ".jsx")):
         return True
@@ -308,7 +339,7 @@ def _fetch_method(args: str) -> str:
 
 def _frontend_framework_for_path(path: str, frameworks: list[FrameworkFact]) -> str:
     names = {item.name for item in frameworks if item.category == "frontend"}
-    if "next" in names and (path.startswith("pages/") or path.startswith("app/")):
+    if "next" in names and _next_route_for_path(path):
         return "next"
     if "react" in names:
         return "react"
@@ -318,8 +349,137 @@ def _frontend_framework_for_path(path: str, frameworks: list[FrameworkFact]) -> 
 
 
 def _page_route(route: str) -> str:
-    cleaned = route.replace("/index", "").replace("[", ":").replace("]", "")
+    grouped = _strip_next_route_groups(route)
+    cleaned = "" if grouped == "index" else grouped.replace("/index", "")
+    cleaned = cleaned.replace("[", ":").replace("]", "")
     return "/" + cleaned.strip("/") if cleaned.strip("/") else "/"
+
+
+def _next_route_for_path(path: str) -> tuple[str, str] | None:
+    for marker in ("/app/", "app/"):
+        if _inside_non_route_source_tree(path, marker):
+            continue
+        route_part = _path_after_marker(path, marker)
+        if route_part is None:
+            continue
+        if "/api/" in f"/{route_part}/":
+            return None
+        if re.fullmatch(r"page\.(?:tsx|ts|jsx|js)", route_part):
+            return "/", "next-app-route"
+        match = re.match(r"(?P<route>.*)/page\.(?:tsx|ts|jsx|js)$", route_part)
+        if match:
+            return _page_route(match.group("route")), "next-app-route"
+
+    for marker in ("/pages/", "pages/"):
+        if _inside_non_route_source_tree(path, marker):
+            continue
+        route_part = _path_after_marker(path, marker)
+        if route_part is None:
+            continue
+        if route_part.startswith("api/") or "/api/" in f"/{route_part}":
+            return None
+        if not route_part.endswith((".tsx", ".ts", ".jsx", ".js")):
+            continue
+        if Path(route_part).stem.startswith("_"):
+            return None
+        return _page_route(route_part.rsplit(".", 1)[0]), "next-pages-route"
+    return None
+
+
+def _path_after_marker(path: str, marker: str) -> str | None:
+    if path.startswith(marker):
+        return path.removeprefix(marker)
+    if not marker.startswith("/"):
+        return None
+    index = path.find(marker)
+    if index == -1:
+        return None
+    return path[index + len(marker):]
+
+
+def _inside_non_route_source_tree(path: str, marker: str) -> bool:
+    prefix = _path_before_marker(path, marker)
+    if prefix is None:
+        return False
+    normalized = prefix.strip("/")
+    return "/src/" in f"/{normalized}/" and normalized != "src" and not normalized.endswith("/src")
+
+
+def _path_before_marker(path: str, marker: str) -> str | None:
+    if path.startswith(marker):
+        return ""
+    if not marker.startswith("/"):
+        return None
+    index = path.find(marker)
+    if index == -1:
+        return None
+    return path[:index]
+
+
+def _strip_next_route_groups(route: str) -> str:
+    parts = [part for part in route.split("/") if part and not (part.startswith("(") and part.endswith(")"))]
+    return "/".join(parts)
+
+
+def _looks_like_react_component_source(source: str) -> bool:
+    return (
+        "React.createElement" in source
+        or "extends React.Component" in source
+        or bool(re.search(r"\breturn\s*\(?\s*<", source))
+        or bool(re.search(r"=>\s*\(?\s*<", source))
+    )
+
+
+def _should_extract_react_router_routes(source: str, frontend_frameworks: set[str]) -> bool:
+    return bool(
+        {"react-router", "react"} & frontend_frameworks
+        and (
+            "react-router" in source
+            or "<Route" in source
+            or "createBrowserRouter" in source
+            or "createHashRouter" in source
+            or "RouterProvider" in source
+        )
+    )
+
+
+def _should_extract_angular_routes(source: str, frontend_frameworks: set[str]) -> bool:
+    return bool(
+        "angular" in frontend_frameworks
+        and (
+            "@angular/router" in source
+            or "RouterModule.forRoot" in source
+            or "RouterModule.forChild" in source
+            or re.search(r"\bRoutes\b", source)
+        )
+    )
+
+
+def _should_extract_vue_router_routes(source: str, frontend_frameworks: set[str]) -> bool:
+    return bool(
+        {"vue-router", "vue"} & frontend_frameworks
+        and (
+            "vue-router" in source
+            or "createRouter" in source
+            or "createWebHistory" in source
+            or "createMemoryHistory" in source
+        )
+    )
+
+
+def _looks_like_route_value(route: str) -> bool:
+    if not route or route.startswith((".", "http:", "https:", "file:")):
+        return False
+    if any(char in route for char in ("\n", "\r", "`", "$", "{", "}")):
+        return False
+    return route in {"", "**"} or route.startswith(("/", ":", "*")) or "/" in route or route.isidentifier()
+
+
+def _normalize_frontend_route(route: str) -> str:
+    stripped = route.strip()
+    if not stripped or stripped == "**" or stripped.startswith(("/", ":", "*")):
+        return stripped or "/"
+    return "/" + stripped
 
 
 def _route(file_fact: FileFact, route: str, framework: str, kind: str, line: int) -> FrontendRouteFact:

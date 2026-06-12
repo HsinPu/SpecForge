@@ -67,7 +67,7 @@ def extract_static_frontend_facts(
     api_calls: list[ApiCallFact] = []
 
     for file_fact in files:
-        if file_fact.role == "test":
+        if file_fact.role in {"test", "sample", "documentation"}:
             continue
         if file_fact.language in PAGE_LANGUAGES:
             source = _read(root, file_fact)
