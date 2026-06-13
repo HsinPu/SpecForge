@@ -193,6 +193,8 @@ def extract_static_frontend_facts(
             forms.extend(_extract_jsx_forms(file_fact, source))
         elif file_fact.language in COMPONENT_MARKUP_LANGUAGES:
             source = _read(root, file_fact)
+            if _is_sveltekit_page_component(file_fact.path):
+                pages.append(_extract_sveltekit_page(file_fact, source))
             forms.extend(_extract_forms(file_fact, source))
             assets.extend(_extract_page_assets(file_fact, source))
 
@@ -210,22 +212,41 @@ def build_frontend_maps(
 ) -> list[FrontendMapFact]:
     maps: list[FrontendMapFact] = []
     global_styles = [style.path for style in styles[:10]]
+    routes_by_route = _frontend_routes_by_route(frontend_routes)
     for page in pages:
         page_assets = [asset.asset_path for asset in assets if asset.source == page.path]
-        page_calls = [call.endpoint for call in api_calls if call.path == page.path]
+        route_sources = routes_by_route.get(page.route, [])
+        route_dir = _route_group_dir(page.path)
+        related_sources = _dedupe([page.path, *[item.path for item in route_sources]])
+        allow_group_fallback = _allow_route_group_fallback(page.path)
+        page_components = [
+            item.name
+            for item in components
+            if item.path in related_sources or (allow_group_fallback and _belongs_to_route_group(route_dir, item.path))
+        ]
+        page_calls = [
+            call.endpoint
+            for call in api_calls
+            if call.path in related_sources or (allow_group_fallback and _belongs_to_route_group(route_dir, call.path))
+        ]
+        page_state = [
+            f"{state.library}:{state.name}"
+            for state in state_usages
+            if state.source in related_sources or (allow_group_fallback and _belongs_to_route_group(route_dir, state.source))
+        ]
         maps.append(
             FrontendMapFact(
                 route=page.route,
                 page=page.path,
-                components=[item.name for item in components if item.path == page.path],
+                components=_dedupe(page_components),
                 api_calls=_dedupe(page_calls),
-                state=[],
+                state=_dedupe(page_state),
                 styles=_dedupe(global_styles + [asset for asset in page_assets if _asset_kind(asset) == "style"]),
                 assets=_dedupe(page_assets),
-                evidence=[page.evidence],
+                evidence=_dedupe_evidence([page.evidence, *[item.evidence for item in route_sources]]),
             )
         )
-    for route, route_sources in _frontend_routes_by_route(frontend_routes).items():
+    for route, route_sources in routes_by_route.items():
         if any(item.route == route for item in maps):
             continue
         primary = _primary_route_source(route_sources)
@@ -361,6 +382,24 @@ def _extract_astro_content_page(file_fact: FileFact, source: str) -> PageFact:
         template_engine="astro-content",
         evidence=Evidence(file=file_fact.path, kind="page", line_start=1, line_end=1),
     )
+
+
+def _extract_sveltekit_page(file_fact: FileFact, source: str) -> PageFact:
+    title_match = TITLE_RE.search(source)
+    title = " ".join(title_match.group("title").split()) if title_match else None
+    return PageFact(
+        path=file_fact.path,
+        route=_sveltekit_route_for_component(file_fact.path) or "/",
+        title=title,
+        kind="sveltekit-page",
+        template_engine="svelte",
+        evidence=Evidence(file=file_fact.path, kind="page", line_start=1, line_end=1),
+    )
+
+
+def _is_sveltekit_page_component(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return normalized.endswith("/+page.svelte") or normalized == "+page.svelte"
 
 
 def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
