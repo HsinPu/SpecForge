@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 from pathlib import Path
 
@@ -210,6 +211,7 @@ def detect_frameworks(
     dependencies: list[DependencyFact],
     imports: list[ImportFact],
 ) -> list[FrameworkFact]:
+    _read_text.cache_clear()
     detected: dict[tuple[str, str], FrameworkFact] = {}
     roles_by_path = {file_fact.path: file_fact.role for file_fact in files}
     dependency_names = {dependency.name.lower() for dependency in dependencies}
@@ -618,7 +620,7 @@ def detect_frameworks(
             if matched:
                 _add(detected, framework, category, "path", 0.75, file_fact.evidence)
         if lower.endswith((".html", ".htm")):
-            source = (root / file_fact.path).read_text(encoding="utf-8", errors="ignore")
+            source = _read_text(root / file_fact.path)
             if _looks_like_thymeleaf(source):
                 _add(detected, "thymeleaf", "frontend", "template", 0.9, file_fact.evidence)
             if "bootstrap" in source.lower():
@@ -626,7 +628,7 @@ def detect_frameworks(
             if "tailwind" in source.lower():
                 _add(detected, "tailwind", "frontend", "template", 0.75, file_fact.evidence)
         if name in {"build.gradle", "build.gradle.kts"}:
-            source = (root / file_fact.path).read_text(encoding="utf-8", errors="ignore")
+            source = _read_text(root / file_fact.path)
             if "com.android.application" in source or "com.android.library" in source:
                 _add(detected, "android", "mobile", "gradle", 0.9, file_fact.evidence)
             if "org.jetbrains.kotlin.android" in source or "kotlin(\"android\")" in source:
@@ -637,7 +639,7 @@ def detect_frameworks(
                 _add(detected, "room", "data", "gradle", 0.85, file_fact.evidence)
 
     pom_path = root / "pom.xml"
-    if pom_path.exists() and "<packaging>war</packaging>" in pom_path.read_text(encoding="utf-8"):
+    if pom_path.exists() and "<packaging>war</packaging>" in _read_text(pom_path):
         _add(
             detected,
             "java-web",
@@ -1950,6 +1952,7 @@ def _looks_like_play_build(path: Path) -> bool:
     return "PlayScala" in source or "PlayJava" in source or "playframework" in source.lower() or "play-" in source.lower()
 
 
+@lru_cache(maxsize=32768)
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")

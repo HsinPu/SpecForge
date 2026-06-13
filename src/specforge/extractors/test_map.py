@@ -35,10 +35,12 @@ GENERIC_TEST_MAP_TOKENS = {
     "server",
     "service",
     "test",
+    "type",
     "update",
 }
 GENERIC_COMPONENT_TEST_TOKENS = {
     "admin",
+    "app",
     "avatar",
     "base",
     "button",
@@ -48,12 +50,18 @@ GENERIC_COMPONENT_TEST_TOKENS = {
     "content",
     "custom",
     "date",
+    "description",
     "dropdown",
+    "error",
+    "example",
     "field",
+    "filter",
     "form",
+    "handle",
     "header",
     "icon",
     "image",
+    "inner",
     "input",
     "item",
     "label",
@@ -65,17 +73,23 @@ GENERIC_COMPONENT_TEST_TOKENS = {
     "navigation",
     "notification",
     "notifications",
+    "name",
+    "placeholder",
     "result",
     "results",
     "row",
+    "setup",
+    "sidebar",
     "step",
     "table",
     "text",
+    "title",
     "topic",
     "topics",
     "upload",
     "user",
     "users",
+    "value",
 }
 GENERIC_TEST_RUNNER_COMMANDS = {
     "clojure -m:test",
@@ -141,6 +155,28 @@ SWIFT_TCA_TESTSTORE_REDUCER_RE = re.compile(
 class _SearchContext:
     haystack: str
     terms: frozenset[str]
+    path_terms: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _ComponentIndex:
+    names: dict[str, str]
+    stems: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _NamedFactIndex:
+    token_targets: dict[str, str]
+    exact_stem_targets: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _TestMapIndexes:
+    components: _ComponentIndex
+    services: _NamedFactIndex
+    repositories: _NamedFactIndex
+    data_models: _NamedFactIndex
+    swift_tca_targets: dict[str, str]
 
 
 def build_test_maps(
@@ -154,6 +190,7 @@ def build_test_maps(
     data_models: list[DataModelFact],
 ) -> list[TestMapFact]:
     maps: list[TestMapFact] = []
+    indexes = _build_test_map_indexes(components, services, repositories, data_models)
     for test_file in test_files:
         if _should_skip_test_map_artifact(test_file):
             continue
@@ -168,16 +205,16 @@ def build_test_maps(
                 allow_root_route=_allows_root_route_match(test_file),
                 allow_symbolic_match=_allows_symbolic_route_match(test_file),
             )
-            component_match = _match_component(search, components) if _should_match_components(test_file) else None
+            component_match = _match_component(search, indexes.components) if _should_match_components(test_file) else None
             command_match = _match_command(search, commands)
             named_target_match = _match_named_code_target(
                 search,
                 test_file,
-                services,
-                repositories,
-                data_models,
+                indexes.services,
+                indexes.repositories,
+                indexes.data_models,
             )
-            swift_tca_match = _match_swift_tca_target(search, data_models) if _is_swift_test_file(test_file) else None
+            swift_tca_match = _match_swift_tca_target(search, indexes.swift_tca_targets) if _is_swift_test_file(test_file) else None
             if _should_prefer_swift_tca_before_components(test_file):
                 match = api_route_match or swift_tca_match or named_target_match or component_match or command_match
             elif _should_prefer_named_code_targets(test_file):
@@ -208,9 +245,60 @@ def build_test_maps(
     return maps
 
 
+def _build_test_map_indexes(
+    components: list[ComponentFact],
+    services: list[ServiceFact],
+    repositories: list[RepositoryFact],
+    data_models: list[DataModelFact],
+) -> _TestMapIndexes:
+    return _TestMapIndexes(
+        components=_build_component_index(components),
+        services=_build_named_fact_index([(item.name, item.path) for item in services]),
+        repositories=_build_named_fact_index([(item.name, item.path) for item in repositories]),
+        data_models=_build_named_fact_index([(item.name, item.path) for item in data_models]),
+        swift_tca_targets=_swift_tca_candidate_map(data_models),
+    )
+
+
+def _build_component_index(components: list[ComponentFact]) -> _ComponentIndex:
+    names: dict[str, str] = {}
+    stems: dict[str, str] = {}
+    for component in components:
+        name = component.name.lower()
+        if _is_meaningful_component_identifier(name):
+            names.setdefault(name, component.name)
+        stem = Path(component.path).stem.lower()
+        if _is_meaningful_component_identifier(stem):
+            stems.setdefault(stem, component.name)
+    return _ComponentIndex(names=names, stems=stems)
+
+
+def _build_named_fact_index(candidates: list[tuple[str, str]]) -> _NamedFactIndex:
+    token_targets: dict[str, str] = {}
+    exact_stem_targets: dict[str, str] = {}
+    for name, path in candidates:
+        lowered = name.lower()
+        if _is_meaningful_identifier(lowered):
+            token_targets.setdefault(lowered, name)
+        stem = Path(path).stem.lower()
+        if _is_meaningful_identifier(stem):
+            token_targets.setdefault(stem, name)
+            if not _is_generic_nested_model_name(stem):
+                exact_stem_targets.setdefault(stem, name)
+        for candidate in _candidate_name_values(name):
+            normalized = candidate.lower()
+            if _is_meaningful_identifier(normalized):
+                exact_stem_targets.setdefault(normalized, name)
+    return _NamedFactIndex(token_targets=token_targets, exact_stem_targets=exact_stem_targets)
+
+
 def _build_search_context(path: str, source: str) -> _SearchContext:
     raw_haystack = f"{path}\n{source}"
-    return _SearchContext(haystack=raw_haystack.lower(), terms=frozenset(_tokenize(raw_haystack)))
+    return _SearchContext(
+        haystack=raw_haystack.lower(),
+        terms=frozenset(_tokenize(raw_haystack)),
+        path_terms=frozenset(_tokenize(path)),
+    )
 
 
 def _tokenize(value: str) -> set[str]:
@@ -353,25 +441,25 @@ def _should_match_data_models(test_file: FileFact) -> bool:
 def _match_named_code_target(
     search: _SearchContext,
     test_file: FileFact,
-    services: list[ServiceFact],
-    repositories: list[RepositoryFact],
-    data_models: list[DataModelFact],
+    services: _NamedFactIndex,
+    repositories: _NamedFactIndex,
+    data_models: _NamedFactIndex,
 ) -> tuple[str, str, str] | None:
     if _should_prefer_repositories(test_file):
         return (
-            _match_named_fact(search, "repository", [(item.name, item.path) for item in repositories])
-            or _match_named_fact(search, "service", [(item.name, item.path) for item in services])
+            _match_named_fact(search, "repository", repositories)
+            or _match_named_fact(search, "service", services)
             or _match_data_model_target(search, test_file, data_models)
         )
     if _should_match_data_models(test_file) and not _should_prefer_services(test_file):
         return (
             _match_data_model_target(search, test_file, data_models)
-            or _match_named_fact(search, "service", [(item.name, item.path) for item in services])
-            or _match_named_fact(search, "repository", [(item.name, item.path) for item in repositories])
+            or _match_named_fact(search, "service", services)
+            or _match_named_fact(search, "repository", repositories)
         )
     return (
-        _match_named_fact(search, "service", [(item.name, item.path) for item in services])
-        or _match_named_fact(search, "repository", [(item.name, item.path) for item in repositories])
+        _match_named_fact(search, "service", services)
+        or _match_named_fact(search, "repository", repositories)
         or _match_data_model_target(search, test_file, data_models)
     )
 
@@ -379,23 +467,22 @@ def _match_named_code_target(
 def _match_data_model_target(
     search: _SearchContext,
     test_file: FileFact,
-    data_models: list[DataModelFact],
+    data_models: _NamedFactIndex,
 ) -> tuple[str, str, str] | None:
     if not _should_match_data_models(test_file):
         return None
-    stem_match = _match_named_fact_by_test_stem(test_file, "data-model", [(item.name, item.path) for item in data_models])
+    stem_match = _match_named_fact_by_test_stem(test_file, "data-model", data_models)
     if stem_match:
         return stem_match
     if _is_swift_test_file(test_file):
         return None
-    return _match_named_fact(search, "data-model", [(item.name, item.path) for item in data_models])
+    return _match_named_fact(search, "data-model", data_models)
 
 
 def _match_swift_tca_target(
     search: _SearchContext,
-    data_models: list[DataModelFact],
+    candidates: dict[str, str],
 ) -> tuple[str, str, str] | None:
-    candidates = _swift_tca_candidate_map(data_models)
     for match in SWIFT_TCA_INITIAL_STATE_RE.finditer(search.haystack):
         target = _clean_swift_tca_target(match.group("target"))
         matched = candidates.get(target.lower())
@@ -624,17 +711,26 @@ def _match_graphql_api_route(haystack: str, route: ApiRouteFact) -> tuple[str, s
 
 def _match_component(
     search: _SearchContext,
-    components: list[ComponentFact],
+    components: _ComponentIndex,
 ) -> tuple[str, str, str] | None:
-    for component in components:
-        name = component.name.lower()
-        if _is_meaningful_component_identifier(name) and _contains_token(search, name):
-            return "component", component.name, "high"
-    for component in components:
-        stem = Path(component.path).stem.lower()
-        if _is_meaningful_component_identifier(stem) and _contains_token(search, stem):
-            return "component", component.name, "medium"
+    for term in search.terms:
+        if target := components.names.get(term):
+            if term in search.path_terms or _contains_component_reference(search, term):
+                return "component", target, "high"
+    for term in search.path_terms:
+        if target := components.stems.get(term):
+            return "component", target, "medium"
     return None
+
+
+def _contains_component_reference(search: _SearchContext, token: str) -> bool:
+    escaped = re.escape(token)
+    boundary = rf"(?<![a-z0-9_]){escaped}(?![a-z0-9_])"
+    return bool(
+        re.search(rf"<\s*{escaped}(?:\b|[\s/>.])", search.haystack)
+        or re.search(rf"\bimport\b[\s\S]{{0,500}}{boundary}", search.haystack)
+        or re.search(rf"\b(?:render|mount|shallow)\s*\([\s\S]{{0,300}}{boundary}", search.haystack)
+    )
 
 
 def _match_command(
@@ -658,39 +754,23 @@ def _is_generic_test_runner_command(command_name: str) -> bool:
 def _match_named_fact(
     search: _SearchContext,
     kind: str,
-    candidates: list[tuple[str, str]],
+    candidates: _NamedFactIndex,
 ) -> tuple[str, str, str] | None:
-    for name, path in candidates:
-        lowered = name.lower()
-        if _is_meaningful_identifier(lowered) and _contains_token(search, lowered):
-            return kind, name, "medium"
-        stem = Path(path).stem.lower()
-        if _is_meaningful_identifier(stem) and _contains_token(search, stem):
-            return kind, name, "medium"
+    for term in search.terms:
+        if target := candidates.token_targets.get(term):
+            return kind, target, "medium"
     return None
 
 
 def _match_named_fact_by_test_stem(
     test_file: FileFact,
     kind: str,
-    candidates: list[tuple[str, str]],
+    candidates: _NamedFactIndex,
 ) -> tuple[str, str, str] | None:
     raw_stem = Path(test_file.path).stem
     normalized_stem = _test_stem_without_suffix(raw_stem)
-    for name, path in candidates:
-        for candidate in _candidate_name_values(name):
-            lowered = candidate.lower()
-            if _is_generic_nested_model_name(candidate) and lowered != normalized_stem:
-                continue
-            if _is_meaningful_identifier(lowered) and lowered == normalized_stem:
-                return kind, name, "high"
-    for name, path in candidates:
-        if _is_generic_nested_model_name(name):
-            continue
-        stem = Path(path).stem
-        lowered = stem.lower()
-        if _is_meaningful_identifier(lowered) and lowered == normalized_stem:
-            return kind, name, "high"
+    if target := candidates.exact_stem_targets.get(normalized_stem):
+        return kind, target, "high"
     return None
 
 
@@ -762,12 +842,43 @@ def _is_meaningful_component_identifier(token: str) -> bool:
 def _contains_route_path(search: _SearchContext, path: str) -> bool:
     normalized = path.rstrip("/") or "/"
     if normalized == "/":
-        return re.search(r"(?:\b(?:get|post|put|patch|delete)\s+|['\"`])/(?:['\"`\s?#),.;:]|$)", search.haystack) is not None
+        return re.search(
+            r"(?:\b(?:get|post|put|patch|delete)\s+/[\s?#),.;:]|"
+            r"[\s.](?:get|post|put|patch|delete)\s*\(\s*['\"`]/['\"`]\s*(?:[,)]))",
+            search.haystack,
+        ) is not None
     if normalized in search.haystack:
         escaped = re.escape(normalized)
         return re.search(rf"(?<![a-z0-9]){escaped}(?:/|['\"`\s?#),.;:]|$)", search.haystack) is not None
-    route_pattern = _route_path_match_pattern(normalized)
-    return route_pattern is not None and re.search(route_pattern, search.haystack) is not None
+    static_tokens = _route_static_tokens(normalized)
+    if _is_dynamic_route(normalized) and not static_tokens:
+        return False
+    if static_tokens and not all(_contains_token(search, token) for token in static_tokens[:3]):
+        return False
+    route_pattern = _route_path_match_regex(normalized)
+    return route_pattern is not None and route_pattern.search(search.haystack) is not None
+
+
+@lru_cache(maxsize=8192)
+def _route_static_tokens(path: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for segment in path.strip("/").split("/"):
+        if not segment or re.fullmatch(r"\{[^}]+\}|:[A-Za-z_]\w*\*?|<[^>]+>", segment):
+            continue
+        for token in re.split(r"[/{}:<>\[\]-]+", segment):
+            if _is_meaningful_identifier(token):
+                tokens.append(token)
+    return tuple(tokens)
+
+
+def _is_dynamic_route(path: str) -> bool:
+    return any(marker in path for marker in ("{", ":", "<"))
+
+
+@lru_cache(maxsize=8192)
+def _route_path_match_regex(path: str) -> re.Pattern[str] | None:
+    route_pattern = _route_path_match_pattern(path)
+    return re.compile(route_pattern) if route_pattern is not None else None
 
 
 def _route_path_match_pattern(path: str) -> str | None:
