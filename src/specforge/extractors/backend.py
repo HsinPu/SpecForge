@@ -503,6 +503,12 @@ AXUM_ROUTE_RE = re.compile(
     re.DOTALL,
 )
 AXUM_METHOD_CALL_RE = re.compile(r"(?:^|\.)\s*(?P<method>get|post|put|delete|patch|options|head)\s*\(\s*(?P<handler>[A-Za-z_:]\w*(?:::\w+)*)?", re.IGNORECASE)
+HYPER_MATCH_ROUTE_RE = re.compile(
+    r"\(\s*&?Method::(?P<method>GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\s*,\s*['\"](?P<path>/[^'\"]*)['\"]\s*\)\s*=>\s*\{",
+    re.MULTILINE,
+)
+RUST_QUALIFIED_CALL_RE = re.compile(r"\b(?P<handler>[a-zA-Z_]\w*(?:::[a-zA-Z_]\w*)+)\s*\(")
+RUST_FUNCTION_CALL_RE = re.compile(r"\b(?P<handler>[a-zA-Z_]\w*)\s*\(")
 DART_SIMPLE_SERVER_ROUTE_RE = re.compile(
     r"\brouter\.(?P<method>get|post|put|delete|patch)\s*\(\s*(?P<target>ApiRoute\.[A-Za-z_]\w*\.v[12]|['\"][^'\"]+['\"])",
     re.IGNORECASE,
@@ -741,6 +747,7 @@ def extract_backend_facts(
             routes.extend(_extract_aspnet_routes(root, file_fact))
         elif file_fact.language == "rust":
             routes.extend(_extract_axum_routes(root, file_fact))
+            routes.extend(_extract_hyper_match_routes(root, file_fact))
             routes.extend(_extract_actix_routes(root, file_fact))
             routes.extend(_extract_rocket_routes(root, file_fact))
             routes.extend(_extract_warp_routes(root, file_fact))
@@ -8454,6 +8461,49 @@ def _extract_axum_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
                 )
             )
     return routes
+
+
+def _extract_hyper_match_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
+    source = _read(root, file_fact)
+    if "req.method()" not in source or "req.uri().path()" not in source or "Method::" not in source:
+        return []
+    routes: list[ApiRouteFact] = []
+    for match in HYPER_MATCH_ROUTE_RE.finditer(source):
+        if _offset_is_rust_inert(source, match.start()):
+            continue
+        block_start = source.find("{", match.end() - 1)
+        block_end = _find_matching_brace(source, block_start)
+        body = source[block_start + 1 : block_end] if block_start >= 0 and block_end is not None else source[match.end() : match.end() + 900]
+        line = _line_for_offset(source, match.start())
+        routes.append(
+            ApiRouteFact(
+                method=match.group("method").upper(),
+                path=match.group("path"),
+                handler=_hyper_match_handler(file_fact.path, body),
+                framework="hyper",
+                kind="hyper-match-route",
+                evidence=Evidence(file=file_fact.path, kind="backend-route", line_start=line, line_end=line),
+                request_body="body" if "req.into_body()" in body else None,
+                response_type="Response" if "Response" in body or "into_response" in body else None,
+            )
+        )
+    return _dedupe_routes(routes)
+
+
+def _hyper_match_handler(file_path: str, body: str) -> str | None:
+    for match in RUST_QUALIFIED_CALL_RE.finditer(body):
+        handler = match.group("handler")
+        if handler.startswith(("Ok::", "Err::", "Response::", "StatusCode::")):
+            continue
+        if any(part[:1].isupper() for part in handler.split("::")):
+            continue
+        return handler
+    for match in RUST_FUNCTION_CALL_RE.finditer(body):
+        handler = match.group("handler")
+        if handler in {"Ok", "Err", "Some", "None", "Response", "return"}:
+            continue
+        return _rust_module_handler(file_path, handler)
+    return None
 
 
 def _extract_actix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
