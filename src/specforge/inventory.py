@@ -1693,12 +1693,12 @@ def _cargo_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact
     for file_fact in files:
         if file_fact.language != "rust" or file_fact.role in {"test", "sample", "generated", "documentation"}:
             continue
+        manifest = _nearest_cargo_manifest(root, file_fact.path)
+        if manifest is None or not _is_cargo_entrypoint_path(root, manifest, file_fact.path):
+            continue
         source = _read_manifest_text(root / file_fact.path)
         main_offset = _rust_main_offset(source)
         if main_offset is None:
-            continue
-        manifest = _nearest_cargo_manifest(root, file_fact.path)
-        if manifest is None:
             continue
         line = _line_for_offset(source, main_offset)
         entrypoints.append(
@@ -1710,6 +1710,31 @@ def _cargo_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact
             )
         )
     return entrypoints
+
+
+def _is_cargo_entrypoint_path(root: Path, manifest: Path, relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/")
+    if normalized.endswith("/build.rs") or normalized == "build.rs":
+        return False
+    package_dir = manifest.parent.relative_to(root).as_posix()
+    local_path = normalized
+    if package_dir != "." and normalized.startswith(f"{package_dir}/"):
+        local_path = normalized[len(package_dir) + 1 :]
+    if local_path == "src/main.rs":
+        return True
+    if re.fullmatch(r"src/bin/[^/]+\.rs", local_path):
+        return True
+    return normalized in _cargo_manifest_bin_paths(root, manifest)
+
+
+def _cargo_manifest_bin_paths(root: Path, manifest: Path) -> set[str]:
+    source = _read_manifest_text(manifest)
+    paths: set[str] = set()
+    for section in re.findall(r"(?ms)^\s*\[\[bin\]\]\s*(.*?)(?=^\s*\[|\Z)", source):
+        path_match = re.search(r'(?m)^\s*path\s*=\s*["\'](?P<path>[^"\']+)["\']', section)
+        if path_match:
+            paths.add((manifest.parent / path_match.group("path")).relative_to(root).as_posix())
+    return paths
 
 
 def _cargo_project_commands(root: Path) -> list[CommandFact]:
