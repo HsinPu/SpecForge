@@ -59,11 +59,14 @@ PRISMA_MODEL_RE = re.compile(r"^\s*model\s+(?P<name>[A-Za-z_]\w*)\s*\{(?P<body>.
 ELIXIR_MODULE_RE = re.compile(r"\bdefmodule\s+(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+do")
 ECTO_SCHEMA_RE = re.compile(r"\bschema\s+['\"](?P<table>[^'\"]+)['\"]\s+do")
 DART_FREEZED_CLASS_RE = re.compile(
-    r"@\s*freezed[\s\S]{0,500}?\bclass\s+(?P<name>[A-Za-z_]\w*)\s+with\s+_\$(?P=name)\s*\{",
+    r"@\s*freezed[\s\S]{0,500}?"
+    r"\b(?:sealed\s+|base\s+|final\s+|abstract\s+)?class\s+(?P<name>[A-Za-z_]\w*)"
+    r"\s+with\s+_\$(?P=name)(?:\s+implements\s+[^{]+)?\s*\{",
     re.MULTILINE,
 )
 DART_FACTORY_RE = re.compile(
-    r"\bconst\s+factory\s+(?P<name>[A-Za-z_]\w*)\s*\(\s*\{(?P<body>[\s\S]*?)\}\s*\)\s*=",
+    r"\bconst\s+factory\s+(?P<name>[A-Za-z_]\w*)"
+    r"(?:\.(?P<variant>[A-Za-z_]\w*))?\s*\((?P<body>[\s\S]*?)\)\s*=",
     re.MULTILINE,
 )
 CS_CLASS_RE = re.compile(
@@ -2446,10 +2449,17 @@ def _extract_dart_freezed_models(file_fact: FileFact, source: str) -> list[DataM
         if close_brace is None:
             continue
         body = source[open_brace + 1 : close_brace]
-        factory = next((item for item in DART_FACTORY_RE.finditer(body) if item.group("name") == name), None)
-        if not factory:
+        factories = [item for item in DART_FACTORY_RE.finditer(body) if item.group("name") == name]
+        if not factories:
             continue
-        fields, annotations = _dart_factory_fields(factory.group("body"))
+        fields: list[str] = []
+        annotations: list[str] = []
+        for factory in factories:
+            factory_fields, factory_annotations = _dart_factory_fields(factory.group("body"))
+            fields.extend(factory_fields)
+            annotations.extend(factory_annotations)
+            if factory.group("variant"):
+                annotations.append(f"factory:{factory.group('variant')}")
         if "fromJson" in body or f"_${name}FromJson" in body:
             annotations.append("json-serializable")
         line = _line_for_offset(source, match.start("name"))
@@ -2469,7 +2479,10 @@ def _extract_dart_freezed_models(file_fact: FileFact, source: str) -> list[DataM
 def _dart_factory_fields(body: str) -> tuple[list[str], list[str]]:
     fields: list[str] = []
     annotations: list[str] = []
-    for part in _split_rust_top_level_commas(body):
+    cleaned_body = body.strip()
+    if cleaned_body.startswith("{") and cleaned_body.endswith("}"):
+        cleaned_body = cleaned_body[1:-1].strip()
+    for part in _split_rust_top_level_commas(cleaned_body):
         raw = " ".join(part.strip().split())
         if not raw:
             continue
