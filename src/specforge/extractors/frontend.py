@@ -208,6 +208,7 @@ EMBER_ROUTE_RE = re.compile(r"this\.route\(\s*['\"](?P<name>[^'\"]+)['\"](?P<arg
 EMBER_MOUNT_RE = re.compile(r"this\.mount\(\s*['\"](?P<name>[^'\"]+)['\"](?P<args>[^)]*)\)", re.DOTALL)
 EMBER_PATH_RE = re.compile(r"path\s*:\s*['\"](?P<path>[^'\"]+)['\"]")
 REACT_NAV_SCREEN_RE = re.compile(r"<(?:[A-Za-z_]\w*\.)?Screen\b[^>]*\bname\s*=\s*['\"](?P<name>[^'\"]+)['\"]")
+REACT_ROUTE_PATH_ATTR_RE = re.compile(r"\bpath\s*=\s*\{?\s*['\"](?P<route>[^'\"\r\n]+)['\"]")
 DART_WIDGET_RE = re.compile(
     r"class\s+(?P<name>[A-Za-z_]\w*)\s+extends\s+(?P<base>StatelessWidget|StatefulWidget|ConsumerWidget|ConsumerStatefulWidget|HookWidget|HookConsumerWidget)\b"
 )
@@ -460,21 +461,7 @@ def _extract_frontend_routes(
                 )
             )
     elif not is_tanstack_source and not is_redwood_source and _should_extract_react_router_routes(source, frontend_frameworks) and "/content/" not in f"/{normalized}":
-        for match in ROUTER_PATH_RE.finditer(source):
-            if _offset_is_js_inert(source, match.start()):
-                continue
-            route_value = match.group("route")
-            if not _looks_like_route_value(route_value):
-                continue
-            routes.append(
-                _route(
-                    file_fact,
-                    _normalize_frontend_route(route_value),
-                    "react",
-                    "react-router-route",
-                    _line_for_offset(source, match.start()),
-                )
-            )
+        routes.extend(_extract_react_router_routes(file_fact, source))
     return routes
 
 
@@ -3606,6 +3593,114 @@ def _should_extract_react_router_routes(source: str, frontend_frameworks: set[st
             or "createRoutesFromElements" in source
         )
     )
+
+
+def _extract_react_router_routes(file_fact: FileFact, source: str) -> list[FrontendRouteFact]:
+    routes, jsx_path_spans = _extract_react_router_jsx_routes(file_fact, source)
+    seen = {(route.route, route.evidence.line_start) for route in routes}
+    for match in ROUTER_PATH_RE.finditer(source):
+        if any(start <= match.start() < end for start, end in jsx_path_spans):
+            continue
+        if _offset_is_js_inert(source, match.start()):
+            continue
+        route_value = match.group("route")
+        if not _looks_like_route_value(route_value):
+            continue
+        line = _line_for_offset(source, match.start())
+        route_path = _normalize_frontend_route(route_value)
+        key = (route_path, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        routes.append(_route(file_fact, route_path, "react", "react-router-route", line))
+    return routes
+
+
+def _extract_react_router_jsx_routes(file_fact: FileFact, source: str) -> tuple[list[FrontendRouteFact], list[tuple[int, int]]]:
+    routes: list[FrontendRouteFact] = []
+    path_spans: list[tuple[int, int]] = []
+    stack: list[str | None] = []
+    seen: set[tuple[str, int]] = set()
+    index = 0
+    while index < len(source):
+        close_match = re.search(r"</(?:Route|ModalRoute)\s*>", source[index:])
+        open_match = re.search(r"<(?:Route|ModalRoute)\b", source[index:])
+        close_index = index + close_match.start() if close_match else -1
+        open_index = index + open_match.start() if open_match else -1
+        candidates = [item for item in (close_index, open_index) if item >= 0]
+        if not candidates:
+            break
+        tag_start = min(candidates)
+        if close_index == tag_start:
+            tag_end = close_index + len(close_match.group(0)) - 1 if close_match else source.find(">", tag_start)
+            if tag_end < 0:
+                break
+            if stack and not _offset_is_js_inert(source, tag_start):
+                stack.pop()
+            index = tag_end + 1
+            continue
+        tag_end = _jsx_tag_end(source, tag_start)
+        if tag_end is None:
+            break
+        tag_name_end = open_index + len(open_match.group(0)) if open_match else tag_start + len("<Route")
+        body = source[tag_name_end:tag_end]
+        route_match = REACT_ROUTE_PATH_ATTR_RE.search(body)
+        route_path: str | None = None
+        if route_match and not _offset_is_js_inert(source, tag_start):
+            route_value = route_match.group("route")
+            if _looks_like_route_value(route_value):
+                route_path = _react_router_joined_route(stack, route_value)
+                line = _line_for_offset(source, tag_start)
+                key = (route_path, line)
+                if key not in seen:
+                    seen.add(key)
+                    routes.append(_route(file_fact, route_path, "react", "react-router-route", line))
+                attr_start = tag_name_end + route_match.start()
+                path_spans.append((attr_start, tag_name_end + route_match.end()))
+        if not body.rstrip().endswith("/"):
+            stack.append(route_path)
+        index = tag_end + 1
+    return routes, path_spans
+
+
+def _react_router_joined_route(stack: list[str | None], route_value: str) -> str:
+    stripped = route_value.strip()
+    parent = next((item for item in reversed(stack) if item), None)
+    if not stack or stripped.startswith(("/", "*")):
+        return _normalize_frontend_route(stripped)
+    if parent is None:
+        return _normalize_frontend_route(stripped)
+    return _join_frontend_routes([parent, stripped])
+
+
+def _jsx_tag_end(source: str, tag_start: int) -> int | None:
+    quote: str | None = None
+    escaped = False
+    brace_depth = 0
+    index = tag_start + 1
+    while index < len(source):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+        if char == "{":
+            brace_depth += 1
+        elif char == "}" and brace_depth:
+            brace_depth -= 1
+        elif char == ">" and brace_depth == 0:
+            return index
+        index += 1
+    return None
 
 
 def _should_extract_angular_routes(source: str, frontend_frameworks: set[str]) -> bool:
