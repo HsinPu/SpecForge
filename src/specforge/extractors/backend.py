@@ -284,6 +284,16 @@ FLASK_ROUTE_RE = re.compile(
     r"@(?:app|blueprint|bp)\.route\(\s*['\"](?P<path>[^'\"]+)['\"](?P<args>[^)]*)\)",
     re.IGNORECASE | re.DOTALL,
 )
+PY_CLASS_RE = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)class\s+(?P<name>[A-Za-z_]\w*)\s*(?:\((?P<bases>[^)]*)\))?:"
+)
+FLASK_APPBUILDER_EXPOSE_RE = re.compile(r"(?m)^(?P<indent>[ \t]*)@expose\s*\(")
+PY_CLASS_STRING_ATTR_RE = re.compile(
+    r"(?m)^[ \t]+(?P<name>route_base|resource_name)\s*=\s*['\"](?P<value>[^'\"]+)['\"]"
+)
+FLASK_APPBUILDER_API_BASES = {"BaseSupersetApi", "BaseSupersetModelRestApi", "ModelRestApi", "BaseApi"}
+FLASK_APPBUILDER_VIEW_BASES = {"BaseSupersetView", "BaseView", "IndexView"}
+PY_FUNCTION_SEARCH_WINDOW = 2000
 GIN_GROUP_RE = re.compile(
     r"^\s*(?P<name>[A-Za-z_]\w*)\s*:?=\s*(?P<parent>[A-Za-z_]\w*)\.Group\(\s*['\"](?P<prefix>/[^'\"]*)['\"]",
     re.MULTILINE,
@@ -3197,7 +3207,132 @@ def _extract_python_backend_routes(root: Path, file_fact: FileFact) -> list[ApiR
                     evidence=Evidence(file=file_fact.path, kind="backend-route", line_start=line, line_end=line),
                 )
             )
+    routes.extend(_extract_flask_appbuilder_exposes(source, file_fact))
     return routes
+
+
+def _extract_flask_appbuilder_exposes(source: str, file_fact: FileFact) -> list[ApiRouteFact]:
+    if "@expose" not in source:
+        return []
+    if not _looks_like_flask_appbuilder_source(source):
+        return []
+    routes: list[ApiRouteFact] = []
+    for class_info in _python_class_blocks(source):
+        class_name, bases, body, body_offset = class_info
+        if not _looks_like_flask_appbuilder_class(bases, body):
+            continue
+        class_prefix = _flask_appbuilder_class_prefix(class_name, bases, body)
+        if class_prefix is None:
+            continue
+        for match in FLASK_APPBUILDER_EXPOSE_RE.finditer(body):
+            args = _python_call_args_at(body, match.end() - 1)
+            path_fragment = _first_python_string_arg(args)
+            if path_fragment is None:
+                continue
+            line = _line_for_offset(source, body_offset + match.start())
+            handler = _function_after(body, match.end())
+            path = _join_paths(class_prefix, path_fragment)
+            for method in _flask_methods(args):
+                routes.append(
+                    ApiRouteFact(
+                        method=method,
+                        path=path,
+                        handler=handler,
+                        framework="flask-appbuilder",
+                        kind="flask-appbuilder-expose",
+                        evidence=Evidence(
+                            file=file_fact.path,
+                            kind="backend-route",
+                            line_start=line,
+                            line_end=line,
+                        ),
+                        class_prefix=class_name,
+                        parameters=_flask_style_path_parameters(path, file_fact.path, line),
+                    )
+                )
+    return routes
+
+
+def _looks_like_flask_appbuilder_source(source: str) -> bool:
+    return (
+        "flask_appbuilder" in source
+        or "BaseSupersetApi" in source
+        or "BaseSupersetView" in source
+        or "ModelRestApi" in source
+        or "BaseApi" in source
+        or "IndexView" in source
+    )
+
+
+def _python_class_blocks(source: str) -> list[tuple[str, str, str, int]]:
+    matches = list(PY_CLASS_RE.finditer(source))
+    blocks: list[tuple[str, str, str, int]] = []
+    for index, match in enumerate(matches):
+        indent = len(match.group("indent").replace("\t", "    "))
+        end = len(source)
+        for next_match in matches[index + 1 :]:
+            next_indent = len(next_match.group("indent").replace("\t", "    "))
+            if next_indent <= indent:
+                end = next_match.start()
+                break
+        body_start = match.end()
+        blocks.append((match.group("name"), match.group("bases") or "", source[body_start:end], body_start))
+    return blocks
+
+
+def _looks_like_flask_appbuilder_class(bases: str, body: str) -> bool:
+    base_names = _python_base_names(bases)
+    return (
+        any(base in FLASK_APPBUILDER_API_BASES | FLASK_APPBUILDER_VIEW_BASES for base in base_names)
+        or any(base.endswith(("RestApi", "Api", "View")) for base in base_names)
+        or "resource_name" in body
+        or "route_base" in body
+    )
+
+
+def _flask_appbuilder_class_prefix(class_name: str, bases: str, body: str) -> str | None:
+    attrs = {match.group("name"): match.group("value") for match in PY_CLASS_STRING_ATTR_RE.finditer(body)}
+    if route_base := attrs.get("route_base"):
+        return route_base
+    if resource_name := attrs.get("resource_name"):
+        return _join_paths("/api/v1", resource_name)
+    base_names = _python_base_names(bases)
+    if "IndexView" in base_names:
+        return ""
+    for base in base_names:
+        if base not in FLASK_APPBUILDER_API_BASES and base.endswith(("RestApi", "Api")):
+            inferred = _camel_to_snake(base).removesuffix("_rest_api").removesuffix("_api")
+            return _join_paths("/api/v1", inferred)
+    if any(base in FLASK_APPBUILDER_API_BASES for base in base_names):
+        inferred = _camel_to_snake(class_name).removesuffix("_rest_api").removesuffix("_api")
+        return _join_paths("/api/v1", inferred)
+    if any(base in FLASK_APPBUILDER_VIEW_BASES or base.endswith("View") for base in base_names):
+        return f"/{class_name.lower()}"
+    return None
+
+
+def _python_base_names(bases: str) -> list[str]:
+    return [part.rsplit(".", 1)[-1] for part in re.findall(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", bases)]
+
+
+def _first_python_string_arg(args: str) -> str | None:
+    match = re.match(r"\s*(?:[rRuUbBfF]+)?['\"](?P<value>[^'\"]+)['\"]", args, flags=re.DOTALL)
+    return match.group("value") if match else None
+
+
+def _flask_style_path_parameters(path: str, file_path: str, line: int) -> list[RequestParamFact]:
+    params: list[RequestParamFact] = []
+    for match in re.finditer(r"<(?:(?P<type>[^:<>]+):)?(?P<name>[A-Za-z_]\w*)>", path):
+        params.append(
+            RequestParamFact(
+                name=match.group("name"),
+                source="path",
+                type=match.group("type"),
+                required=True,
+                evidence=Evidence(file=file_path, kind="request-param", line_start=line, line_end=line),
+            )
+        )
+    return params
 
 
 def _fastapi_method_info(
@@ -6665,6 +6800,10 @@ def _camel_to_kebab(value: str) -> str:
     return re.sub(r"(?<!^)([A-Z])", r"-\1", value).replace("_", "-").lower()
 
 
+def _camel_to_snake(value: str) -> str:
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", value).replace("-", "_").lower()
+
+
 def _extract_drupal_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
     source = _read(root, file_fact)
     routes: list[ApiRouteFact] = []
@@ -9241,7 +9380,7 @@ def _clean_route_path(value: str) -> str:
 
 
 def _function_after(source: str, offset: int) -> str | None:
-    match = PY_FUNCTION_AFTER_DECORATOR_RE.search(source[offset : offset + 400])
+    match = PY_FUNCTION_AFTER_DECORATOR_RE.search(source[offset : offset + PY_FUNCTION_SEARCH_WINDOW])
     return match.group("name") if match else None
 
 
