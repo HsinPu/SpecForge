@@ -76,6 +76,20 @@ AXIOS_RE = re.compile(
     r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`]",
     re.IGNORECASE,
 )
+BLADE_ROUTE_FETCH_RE = re.compile(
+    r"(?<!\.)\bfetch\(\s*"
+    r"(?P<quote>['\"])\s*"
+    r"\{\{\s*route\(\s*(?P<name_quote>['\"])(?P<name>[^'\"]+)(?P=name_quote)[^}]*\}\}\s*"
+    r"(?P=quote)(?P<args>[^)]*)\)",
+    re.IGNORECASE | re.DOTALL,
+)
+BLADE_ROUTE_AXIOS_RE = re.compile(
+    r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*"
+    r"(?P<quote>['\"])\s*"
+    r"\{\{\s*route\(\s*(?P<name_quote>['\"])(?P<name>[^'\"]+)(?P=name_quote)[^}]*\}\}\s*"
+    r"(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
 CLIENT_CALL_RE = re.compile(
     r"\b(?P<client>api|client|http|request|service)\.(?P<method>get|post|put|delete|patch)"
     r"\(\s*['\"`](?P<endpoint>/[^'\"`]+)['\"`]",
@@ -782,11 +796,48 @@ def _extract_standalone_asset(file_fact: FileFact) -> AssetFact:
 
 def _extract_api_calls(file_fact: FileFact, source: str, context: str) -> list[ApiCallFact]:
     calls: list[ApiCallFact] = []
-    for match in FETCH_RE.finditer(source):
+    for match in BLADE_ROUTE_FETCH_RE.finditer(source):
         calls.append(
             ApiCallFact(
                 path=file_fact.path,
-                endpoint=match.group("endpoint"),
+                endpoint=f"route:{match.group('name')}",
+                method=_fetch_method(match.group("args")),
+                client="fetch",
+                trigger="runtime",
+                context=context,
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, match.end()),
+                ),
+            )
+        )
+    for match in BLADE_ROUTE_AXIOS_RE.finditer(source):
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=f"route:{match.group('name')}",
+                method=match.group("method").upper(),
+                client="axios",
+                trigger="runtime",
+                context=context,
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, match.end()),
+                ),
+            )
+        )
+    for match in FETCH_RE.finditer(source):
+        endpoint = match.group("endpoint")
+        if _is_template_endpoint_fragment(endpoint):
+            continue
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=endpoint,
                 method=_fetch_method(match.group("args")),
                 client="fetch",
                 trigger="runtime",
@@ -800,10 +851,13 @@ def _extract_api_calls(file_fact: FileFact, source: str, context: str) -> list[A
             )
         )
     for match in AXIOS_RE.finditer(source):
+        endpoint = match.group("endpoint")
+        if _is_template_endpoint_fragment(endpoint):
+            continue
         calls.append(
             ApiCallFact(
                 path=file_fact.path,
-                endpoint=match.group("endpoint"),
+                endpoint=endpoint,
                 method=match.group("method").upper(),
                 client="axios",
                 trigger="runtime",
@@ -888,6 +942,11 @@ def _extract_api_calls(file_fact: FileFact, source: str, context: str) -> list[A
                 )
             )
     return calls
+
+
+def _is_template_endpoint_fragment(endpoint: str) -> bool:
+    value = endpoint.strip()
+    return value.startswith(("{{", "{%", "<%")) or " route(" in value or value.startswith("@{")
 
 
 def _attrs(source: str) -> dict[str, str]:
