@@ -74,7 +74,9 @@ def _service_rows(facts: ProjectFacts) -> str:
 def _evidence_label(evidence: object) -> str:
     line = getattr(evidence, "line_start", None)
     file = getattr(evidence, "file", "")
-    return f"`{file}:{line}`" if line else f"`{file}`"
+    label = f"`{file}:{line}`" if line else f"`{file}`"
+    note = getattr(evidence, "note", None)
+    return f"{label} ({note})" if note else label
 
 def _source_link(path: str, line: int) -> str:
     return f"`{path}:{line}`"

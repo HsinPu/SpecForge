@@ -75,7 +75,7 @@ def extract_java_web_facts(
     services: list[ServiceFact] = []
 
     for file_fact in files:
-        if file_fact.role in {"test", "sample"}:
+        if file_fact.role in {"test", "sample", "generated"}:
             continue
         normalized = file_fact.path.replace("\\", "/")
         if file_fact.language == "java":
@@ -202,16 +202,20 @@ def _extract_jsp_page(root: Path, file_fact: FileFact) -> JspPageFact:
 
 
 def _extract_data_models(file_fact: FileFact, source: str) -> list[DataModelFact]:
+    code = _java_mask_comments(source)
     facts: list[DataModelFact] = []
-    fields = [f"{match.group('type').strip()} {match.group('name')}" for match in JAVA_FIELD_RE.finditer(source)]
-    annotations = _dedupe(match.group("name") for match in ANNOTATION_NAME_RE.finditer(source))
-    for match in JAVA_TYPE_RE.finditer(source):
+    for match in JAVA_TYPE_RE.finditer(code):
         name = match.group("name")
-        block = _annotation_block_before(source, match.start())
+        open_brace = code.find("{", match.end())
+        close_brace = _find_matching_brace(code, open_brace) if open_brace >= 0 else None
+        class_body = code[open_brace + 1 : close_brace] if close_brace is not None else ""
+        block = _annotation_block_before(code, match.start())
+        annotations = _dedupe(match.group("name") for match in ANNOTATION_NAME_RE.finditer(f"{block}\n{class_body}"))
         kind = _data_model_kind(name, block, annotations)
         if kind is None:
             continue
-        line = _line_for_offset(source, match.start())
+        fields = [f"{field.group('type').strip()} {field.group('name')}" for field in JAVA_FIELD_RE.finditer(class_body)]
+        line = _line_for_offset(code, match.start())
         facts.append(
             DataModelFact(
                 name=name,
@@ -226,12 +230,13 @@ def _extract_data_models(file_fact: FileFact, source: str) -> list[DataModelFact
 
 
 def _extract_repositories(file_fact: FileFact, source: str) -> list[RepositoryFact]:
+    code = _java_mask_comments(source)
     facts: list[RepositoryFact] = []
     seen: set[str] = set()
-    for match in REPOSITORY_EXTENDS_RE.finditer(source):
+    for match in REPOSITORY_EXTENDS_RE.finditer(code):
         name = match.group("name")
         seen.add(name)
-        line = _line_for_offset(source, match.start())
+        line = _line_for_offset(code, match.start())
         facts.append(
             RepositoryFact(
                 name=name,
@@ -242,11 +247,11 @@ def _extract_repositories(file_fact: FileFact, source: str) -> list[RepositoryFa
             )
         )
 
-    for match in JAVA_TYPE_RE.finditer(source):
+    for match in JAVA_TYPE_RE.finditer(code):
         name = match.group("name")
         if name in seen or not name.endswith("Repository"):
             continue
-        line = _line_for_offset(source, match.start())
+        line = _line_for_offset(code, match.start())
         facts.append(
             RepositoryFact(
                 name=name,
@@ -260,14 +265,15 @@ def _extract_repositories(file_fact: FileFact, source: str) -> list[RepositoryFa
 
 
 def _extract_services(file_fact: FileFact, source: str) -> list[ServiceFact]:
+    code = _java_mask_comments(source)
     facts: list[ServiceFact] = []
-    methods = _dedupe(match.group("name") for match in JAVA_METHOD_RE.finditer(source))
-    for match in JAVA_TYPE_RE.finditer(source):
+    methods = _dedupe(match.group("name") for match in JAVA_METHOD_RE.finditer(code))
+    for match in JAVA_TYPE_RE.finditer(code):
         name = match.group("name")
-        block = _annotation_block_before(source, match.start())
+        block = _annotation_block_before(code, match.start())
         if "@Service" not in block and not name.endswith("Service"):
             continue
-        line = _line_for_offset(source, match.start())
+        line = _line_for_offset(code, match.start())
         facts.append(
             ServiceFact(
                 name=name,
@@ -280,23 +286,57 @@ def _extract_services(file_fact: FileFact, source: str) -> list[ServiceFact]:
 
 
 def _count_spring_controllers(source: str) -> int:
+    code = _java_mask_comments(source)
     count = 0
-    for match in JAVA_TYPE_RE.finditer(source):
-        block = _annotation_block_before(source, match.start())
+    for match in JAVA_TYPE_RE.finditer(code):
+        block = _annotation_block_before(code, match.start())
         if "@RestController" in block or "@Controller" in block:
             count += 1
     return count
 
 
+def _java_mask_comments(source: str) -> str:
+    def replace_comment(match: re.Match[str]) -> str:
+        return "".join("\n" if char == "\n" else " " for char in match.group(0))
+
+    return re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", replace_comment, source)
+
+
 def _data_model_kind(name: str, annotation_block: str, annotations: list[str]) -> str | None:
     if "@Entity" in annotation_block or name.endswith("Entity"):
         return "entity"
-    if name.endswith(("DTO", "Dto", "Request", "Response")):
+    if name.endswith(("DTO", "Dto", "Request", "Response", "Data", "Param")):
         return "dto"
     if name.endswith("Model"):
         return "model"
     if {"Table", "Column", "Id"} & set(annotations):
         return "model"
+    return None
+
+
+def _find_matching_brace(source: str, open_index: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for index in range(open_index, len(source)):
+        char = source[index]
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
     return None
 
 
@@ -345,7 +385,7 @@ def _find_text(element: ET.Element, namespace: str, name: str) -> str | None:
 
 
 def _read(root: Path, file_fact: FileFact) -> str:
-    return (root / file_fact.path).read_text(encoding="utf-8")
+    return (root / file_fact.path).read_text(encoding="utf-8", errors="ignore")
 
 
 def _line_for_offset(source: str, offset: int) -> int:

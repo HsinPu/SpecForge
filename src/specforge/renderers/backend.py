@@ -4,6 +4,7 @@ from specforge.models import ProjectFacts
 from specforge.renderers.shared import (
     _code_list,
     _data_model_rows,
+    _evidence_label,
     _param_summary,
     _repository_rows,
     _service_rows,
@@ -15,13 +16,13 @@ def render_backend(facts: ProjectFacts) -> str:
         return "# Backend\n\nNo backend surface was detected by the current extractors.\n"
     sections = ["# Backend\n"]
     for surface in facts.backend_surfaces:
-        java_services = len(facts.services) if surface.framework in {"java-web", "servlet", "spring"} else 0
+        service_facts = len(facts.services) if surface.framework in {"java-web", "servlet", "spring", "redwood"} else 0
         java_models = len(facts.data_models) if surface.framework in {"java-web", "servlet", "spring"} else 0
         sections.append(
             f"## {surface.framework}\n\n"
             f"- Routes: {surface.route_count}\n"
             f"- Handlers: {surface.handler_count}\n"
-            f"- Service symbols: {surface.service_count + java_services}\n"
+            f"- Service symbols: {surface.service_count + service_facts}\n"
             f"- Model symbols: {surface.model_count + java_models}\n"
             f"- Data-layer facts: {surface.data_layer_count}\n"
             f"- Runtime config facts: {surface.runtime_config_count}\n"
@@ -42,7 +43,7 @@ def render_api_routes(facts: ProjectFacts) -> str:
             f"{_param_summary(route.parameters)} | `{route.request_body or ''}` | "
             f"`{route.response_type or ''}` | "
             f"{route.framework} | {route.kind} | "
-            f"{_source_link(route.evidence.file, route.evidence.line_start or 1)} |"
+            f"{_evidence_label(route.evidence)} |"
         )
     return "# API Routes\n\n" + "\n".join(rows) + "\n"
 
@@ -83,7 +84,7 @@ def render_spring(facts: ProjectFacts) -> str:
                 f"| {route.method} | `{route.path}` | `{route.handler or ''}` | "
                 f"`{route.class_prefix or ''}` | {_param_summary(route.parameters)} | "
                 f"`{route.request_body or ''}` | `{route.response_type or ''}` | "
-                f"{_source_link(route.evidence.file, route.evidence.line_start or 1)} |"
+                f"{_evidence_label(route.evidence)} |"
             )
         sections.append("## Routes\n\n" + "\n".join(rows) + "\n")
     if facts.services:
@@ -169,7 +170,7 @@ def render_api_contracts(facts: ProjectFacts) -> str:
             f"{_code_list(contract.status_codes) or '`unknown`'} | "
             f"{_code_list(contract.error_hints) or '`unknown`'} | "
             f"{contract.framework} | "
-            f"{_source_link(contract.evidence.file, contract.evidence.line_start or 1)} |"
+            f"{_evidence_label(contract.evidence)} |"
         )
     return "# API Contracts\n\n" + "\n".join(rows) + "\n"
 

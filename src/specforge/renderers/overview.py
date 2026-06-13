@@ -168,7 +168,8 @@ def render_architecture(facts: ProjectFacts) -> str:
     ) or "- no AST-backed modules detected"
     backend = "\n".join(
         f"- {surface.framework}: {surface.route_count} route(s), "
-        f"{surface.service_count} service symbol(s), {surface.model_count} model symbol(s), "
+        f"{_backend_surface_service_count(facts, surface.framework, surface.service_count)} service symbol(s), "
+        f"{surface.model_count} model symbol(s), "
         f"{surface.data_layer_count} data-layer fact(s), "
         f"{surface.runtime_config_count} runtime config fact(s), "
         f"{surface.test_map_count} test map entry/entries"
@@ -337,6 +338,12 @@ def render_modules(facts: ProjectFacts) -> str:
             f"{_symbol_bullets(top_level) or '- no top-level symbols detected'}\n"
         )
     return "\n".join(sections)
+
+
+def _backend_surface_service_count(facts: ProjectFacts, framework: str, base_count: int) -> int:
+    if framework in {"java-web", "servlet", "spring", "redwood"}:
+        return base_count + len(facts.services)
+    return base_count
 
 def render_symbols(facts: ProjectFacts) -> str:
     if not facts.symbols:

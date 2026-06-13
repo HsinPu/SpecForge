@@ -1,16 +1,20 @@
 ﻿from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from specforge.extractors.api_links import build_api_links
 from specforge.extractors.backend import extract_backend_facts
+from specforge.extractors.code_models import extract_code_model_facts
 from specforge.extractors.contracts import build_api_contracts, extract_contract_details
 from specforge.extractors.data_layer import extract_data_layer_facts
 from specforge.extractors.frameworks import detect_frameworks
 from specforge.extractors.frontend import build_frontend_surfaces, extract_frontend_facts
 from specforge.extractors.java_web import extract_java_web_facts
+from specforge.extractors.polyglot_text import extract_polyglot_facts
 from specforge.extractors.python_ast import extract_python_facts
+from specforge.extractors.redwood import extract_redwood_service_facts
 from specforge.extractors.relationships import build_relationship_facts
 from specforge.extractors.runtime_config import extract_runtime_config_facts
 from specforge.extractors.static_frontend import build_frontend_maps, extract_static_frontend_facts
@@ -19,6 +23,7 @@ from specforge.extractors.typescript_text import extract_typescript_facts
 from specforge.inventory import (
     collect_dependencies,
     collect_entrypoints,
+    collect_project_commands,
     file_fact,
     iter_source_files,
 )
@@ -35,6 +40,7 @@ from specforge.models import (
     DataLayerFact,
     DataModelFact,
     EntrypointFact,
+    Evidence,
     ExtractionIssue,
     FileFact,
     FormFact,
@@ -207,10 +213,15 @@ def _scan_language_surfaces(root_path: Path, file_facts: list[FileFact]) -> Lang
         root_path,
         file_facts,
     )
-    imports = [*python_imports, *ts_imports]
-    symbols = [*python_symbols, *ts_symbols]
-    commands = [*python_commands, *ts_commands]
-    extraction_issues = [*python_issues, *ts_issues]
+    polyglot_imports, polyglot_symbols, polyglot_commands, polyglot_issues = extract_polyglot_facts(
+        root_path,
+        file_facts,
+    )
+    project_commands = collect_project_commands(root_path, file_facts)
+    imports = [*python_imports, *ts_imports, *polyglot_imports]
+    symbols = [*python_symbols, *ts_symbols, *polyglot_symbols]
+    commands = [*python_commands, *ts_commands, *polyglot_commands, *project_commands]
+    extraction_issues = [*python_issues, *ts_issues, *polyglot_issues]
     return LanguageScan(
         imports=imports,
         symbols=symbols,
@@ -234,6 +245,20 @@ def _scan_backend_surfaces(
         repositories,
         services,
     ) = extract_java_web_facts(root_path, file_facts)
+    data_models = [
+        *data_models,
+        *extract_code_model_facts(root_path, file_facts),
+    ]
+    repositories = [
+        *repositories,
+        *_nestjs_typeorm_repository_facts(root_path, file_facts, repositories),
+        *_repository_facts_from_symbols(symbols, repositories),
+    ]
+    services = [
+        *services,
+        *extract_redwood_service_facts(root_path, file_facts),
+        *_service_facts_from_symbols(symbols, services),
+    ]
     contract_details = extract_contract_details(root_path, file_facts, api_routes)
     api_contracts = build_api_contracts(api_routes, contract_details)
     return BackendScan(
@@ -322,6 +347,7 @@ def _build_connected_surfaces(
     )
     frontend_maps = build_frontend_maps(
         frontend_scan.pages,
+        frontend_scan.frontend_routes,
         frontend_scan.components,
         api_calls,
         frontend_scan.state_usages,
@@ -385,6 +411,202 @@ def _build_connected_surfaces(
 
 
 
+
+
+SERVICE_SYMBOL_SUFFIXES = (
+    "Service",
+    "Provider",
+    "Manager",
+    "Helper",
+    "Formatter",
+    "Parser",
+    "Validator",
+    "Converter",
+    "Factory",
+    "Client",
+    "Wrapper",
+)
+
+GENERIC_SERVICE_SYMBOLS = {
+    "BaseService",
+    "IService",
+    "Service",
+    "ServiceTest",
+}
+
+GENERIC_REPOSITORY_SYMBOLS = {
+    "IRepository",
+    "Repository",
+}
+
+NESTJS_INJECT_REPOSITORY_RE = re.compile(
+    r"@\s*InjectRepository\s*\(\s*(?P<entity>[A-Za-z_$][\w$]*)\s*\)\s*"
+    r"(?:(?:private|public|protected)\s+)?(?:readonly\s+)?"
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*:\s*Repository\s*<\s*(?P<typed_entity>[A-Za-z_$][\w$]*)\s*>",
+    re.MULTILINE,
+)
+
+
+def _nestjs_typeorm_repository_facts(
+    root_path: Path,
+    file_facts: list[FileFact],
+    existing: list[RepositoryFact],
+) -> list[RepositoryFact]:
+    seen = {(item.name, item.path) for item in existing}
+    repositories: list[RepositoryFact] = []
+    for file_fact in file_facts:
+        if file_fact.role in {"test", "sample", "generated"} or file_fact.language not in {"typescript", "javascript"}:
+            continue
+        source = _read_text(root_path / file_fact.path)
+        if "@InjectRepository" not in source or "Repository<" not in source:
+            continue
+        for match in NESTJS_INJECT_REPOSITORY_RE.finditer(source):
+            entity = match.group("typed_entity") or match.group("entity")
+            name = _injected_repository_name(match.group("name"), entity)
+            key = (name, file_fact.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            line = _line_for_offset(source, match.start())
+            repositories.append(
+                RepositoryFact(
+                    name=name,
+                    path=file_fact.path,
+                    entity=entity,
+                    base_interface=f"Repository<{entity}>",
+                    evidence=Evidence(file=file_fact.path, kind="repository", line_start=line, line_end=line),
+                )
+            )
+    return repositories
+
+
+def _injected_repository_name(variable: str, entity: str) -> str:
+    if variable.lower().endswith("repository"):
+        return variable[:1].upper() + variable[1:]
+    return f"{entity.removesuffix('Entity')}Repository"
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _line_for_offset(source: str, offset: int) -> int:
+    return source.count("\n", 0, offset) + 1
+
+
+def _repository_facts_from_symbols(
+    symbols: list[SymbolFact],
+    existing: list[RepositoryFact],
+) -> list[RepositoryFact]:
+    seen = {(item.name, item.path) for item in existing}
+    repositories: list[RepositoryFact] = []
+    for symbol in symbols:
+        if not _is_top_level_code_type(symbol) or _is_test_symbol(symbol):
+            continue
+        if symbol.name in GENERIC_REPOSITORY_SYMBOLS:
+            continue
+        if not _looks_like_repository_symbol(symbol):
+            continue
+        key = (symbol.name, symbol.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        repositories.append(
+            RepositoryFact(
+                name=symbol.name,
+                path=symbol.path,
+                entity=_repository_entity_name(symbol.name),
+                base_interface=None,
+                evidence=Evidence(
+                    file=symbol.path,
+                    kind="repository",
+                    line_start=symbol.line_start,
+                    line_end=symbol.line_end or symbol.line_start,
+                ),
+            )
+        )
+    return repositories
+
+
+def _service_facts_from_symbols(
+    symbols: list[SymbolFact],
+    existing: list[ServiceFact],
+) -> list[ServiceFact]:
+    seen = {(item.name, item.path) for item in existing}
+    services: list[ServiceFact] = []
+    for symbol in symbols:
+        if not _is_top_level_code_type(symbol) or _is_test_symbol(symbol):
+            continue
+        if symbol.name in GENERIC_SERVICE_SYMBOLS:
+            continue
+        if not _looks_like_service_symbol(symbol):
+            continue
+        key = (symbol.name, symbol.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        services.append(
+            ServiceFact(
+                name=symbol.name,
+                path=symbol.path,
+                methods=[],
+                evidence=Evidence(
+                    file=symbol.path,
+                    kind="service",
+                    line_start=symbol.line_start,
+                    line_end=symbol.line_end or symbol.line_start,
+                ),
+            )
+        )
+    return services
+
+
+def _is_top_level_code_type(symbol: SymbolFact) -> bool:
+    return symbol.kind in {"class", "interface"} and symbol.parent is None
+
+
+def _is_test_symbol(symbol: SymbolFact) -> bool:
+    normalized = symbol.path.replace("\\", "/").lower()
+    name = symbol.name.lower()
+    return (
+        "/test/" in f"/{normalized}/"
+        or "/tests/" in f"/{normalized}/"
+        or ".tests/" in normalized
+        or name.endswith(("test", "tests", "fixture"))
+    )
+
+
+def _looks_like_repository_symbol(symbol: SymbolFact) -> bool:
+    normalized = symbol.path.replace("\\", "/").lower()
+    name = symbol.name.removeprefix("I")
+    return (
+        name.endswith("Repository")
+        or "/repositories/" in f"/{normalized}"
+        or "/repository/" in f"/{normalized}"
+    )
+
+
+def _looks_like_service_symbol(symbol: SymbolFact) -> bool:
+    normalized = symbol.path.replace("\\", "/").lower()
+    name = symbol.name.removeprefix("I")
+    return (
+        name.endswith(SERVICE_SYMBOL_SUFFIXES)
+        or "/services/" in f"/{normalized}"
+        or "/service/" in f"/{normalized}"
+    )
+
+
+def _repository_entity_name(name: str) -> str | None:
+    normalized = name.removeprefix("I")
+    if not normalized.endswith("Repository"):
+        return None
+    entity = normalized.removesuffix("Repository")
+    if not entity or entity in {"Base", "Entity"}:
+        return None
+    return entity
 
 
 def _dedupe_frontend_routes(routes: list[FrontendRouteFact]) -> list[FrontendRouteFact]:

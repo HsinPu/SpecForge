@@ -43,6 +43,8 @@ def extract_typescript_facts(
     issues: list[ExtractionIssue] = []
 
     for file_fact in files:
+        if file_fact.role in {"generated", "sample"}:
+            continue
         if file_fact.language not in {"typescript", "javascript"}:
             continue
         path = root / file_fact.path

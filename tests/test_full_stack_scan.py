@@ -891,6 +891,19 @@ export function Example() {
 """.strip(),
                 encoding="utf-8",
             )
+            (root / "e2e" / "host" / "app").mkdir(parents=True)
+            (root / "e2e" / "host" / "app" / "page.tsx").write_text(
+                """
+export default function E2EHostPage() {
+  return <main />;
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            (root / "e2e" / "host" / "next.config.js").write_text(
+                "module.exports = {};\n",
+                encoding="utf-8",
+            )
 
             facts = scan_project(root)
             routes = {(route.route, route.framework, route.kind) for route in facts.frontend_routes}
@@ -899,6 +912,7 @@ export function Example() {
             test_paths = {file.path for file in facts.test_files}
             sample_paths = {file.path for file in facts.files if file.role == "sample"}
             documentation_paths = {file.path for file in facts.files if file.role == "documentation"}
+            framework_names = {framework.name for framework in facts.frameworks}
 
             self.assertIn(("/settings", "react", "react-router-route"), routes)
             self.assertIn(("/guide/forms", "angular", "angular-route"), routes)
@@ -908,12 +922,16 @@ export function Example() {
             self.assertNotIn("CaseComponent", components)
             self.assertNotIn("TestFixturePage", components)
             self.assertNotIn("Example", components)
+            self.assertNotIn("E2EHostPage", components)
             self.assertIn("compiler/fixtures/FixtureComponent.tsx", sample_paths)
             self.assertIn("examples/demo/app/page.tsx", sample_paths)
             self.assertNotIn("compiler/fixtures/FixtureComponent.tsx", test_paths)
             self.assertIn("scripts/eslint-plugin-react-hooks-test-cases.js", test_paths)
             self.assertIn("packages/next-codemod/bin/__testfixtures__/mixed-router/app/page.tsx", test_paths)
             self.assertIn("src/__tests__/Example.spec.tsx", test_paths)
+            self.assertIn("e2e/host/app/page.tsx", test_paths)
+            self.assertIn("e2e/host/next.config.js", test_paths)
+            self.assertNotIn("next", framework_names)
             self.assertIn("src/main/resources/hudson/model/Thing/help-name.html", documentation_paths)
             self.assertIn("src/main/resources/hudson/model/Thing/help.html", documentation_paths)
             self.assertIn("war/src/main/webapp/help/LogRecorder/logger.html", documentation_paths)
