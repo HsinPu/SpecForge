@@ -358,15 +358,20 @@ RAILS_SYMBOL_ROUTE_RE = re.compile(r"^(?P<method>get|post|put|patch|delete)\s+:?
 RAILS_DEVISE_TOKEN_AUTH_RE = re.compile(r"^mount_devise_token_auth_for\b(?P<args>.*)$", re.IGNORECASE)
 RAILS_DEVISE_FOR_RE = re.compile(r"^devise_for\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$", re.IGNORECASE)
 PHOENIX_ROUTE_RE = re.compile(
-    r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*)\s*,\s*:(?P<action>[A-Za-z_]\w*)",
+    r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
+    r"(?P<controller>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+    r"(?:\s*,\s*:(?P<action>[A-Za-z_]\w*))?",
     re.IGNORECASE | re.MULTILINE,
 )
 PHOENIX_LINE_ROUTE_RE = re.compile(
-    r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*)\s*,\s*:(?P<action>[A-Za-z_]\w*)",
+    r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
+    r"(?P<controller>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+    r"(?:\s*,\s*:(?P<action>[A-Za-z_]\w*))?",
     re.IGNORECASE,
 )
 PHOENIX_LIVE_RE = re.compile(
-    r"^\s*live\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<liveview>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)"
+    r"^\s*live\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
+    r"(?P<liveview>on_ee\([^)]*\)|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
     r"(?:\s*,\s*:(?P<action>[A-Za-z_]\w*))?",
     re.IGNORECASE,
 )
@@ -379,12 +384,13 @@ PHOENIX_FORWARD_RE = re.compile(
     re.IGNORECASE,
 )
 PHOENIX_SCOPE_RE = re.compile(r"^\s*scope\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]", re.IGNORECASE)
+PHOENIX_SCOPE_NAMED_PATH_RE = re.compile(r"^\s*scope\b[^\n#]*\bpath:\s*['\"](?P<path>/[^'\"]*)['\"]", re.IGNORECASE)
 PHOENIX_RESOURCES_RE = re.compile(
-    r"^\s*resources\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*)(?P<args>[^\n]*)",
+    r"^\s*resources\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?P<args>[^\n]*)",
     re.IGNORECASE | re.MULTILINE,
 )
 PHOENIX_LINE_RESOURCES_RE = re.compile(
-    r"^\s*resources\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*)(?P<args>[^\n]*)",
+    r"^\s*resources\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*(?P<controller>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?P<args>[^\n]*)",
     re.IGNORECASE,
 )
 PLAY_ROUTE_LINE_RE = re.compile(
@@ -7805,28 +7811,37 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
     source = _read(root, file_fact)
     routes: list[ApiRouteFact] = []
     scope_stack: list[str | None] = []
-    for line_number, line in enumerate(source.splitlines(), start=1):
+    lines = source.splitlines()
+    skip_until = -1
+    for index, line in enumerate(lines):
+        if index <= skip_until:
+            continue
+        line_number = index + 1
         stripped = line.strip()
         if stripped == "end":
             if scope_stack:
                 scope_stack.pop()
             continue
 
-        scope_match = PHOENIX_SCOPE_RE.match(line)
-        if scope_match and re.search(r"\bdo\s*(?:#.*)?$", line):
-            scope_stack.append(scope_match.group("path"))
+        statement, statement_end = _phoenix_continued_statement(lines, index)
+        skip_until = max(skip_until, statement_end)
+        scope_path = _phoenix_scope_path(statement)
+        if stripped.startswith("scope") and re.search(r"\bdo\s*(?:#.*)?$", statement):
+            scope_stack.append(scope_path)
             continue
 
         prefix = _phoenix_current_scope(scope_stack)
-        route_match = PHOENIX_LINE_ROUTE_RE.match(line)
+        route_match = PHOENIX_LINE_ROUTE_RE.match(statement)
         if route_match:
             route_path = _join_paths(prefix, route_match.group("path"))
             method = route_match.group("method").upper()
+            action = route_match.group("action")
+            handler = route_match.group("controller") + (f":{action}" if action else "")
             routes.append(
                 ApiRouteFact(
                     method=method,
                     path=route_path,
-                    handler=f"{route_match.group('controller')}:{route_match.group('action')}",
+                    handler=handler,
                     framework="phoenix",
                     kind="phoenix-route",
                     evidence=Evidence(file=file_fact.path, kind="backend-route", line_start=line_number, line_end=line_number),
@@ -7836,7 +7851,7 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
             continue
 
-        live_match = PHOENIX_LIVE_RE.match(line)
+        live_match = PHOENIX_LIVE_RE.match(statement)
         if live_match:
             route_path = _join_paths(prefix, live_match.group("path"))
             action = live_match.group("action")
@@ -7855,7 +7870,7 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
             continue
 
-        dashboard_match = PHOENIX_LIVE_DASHBOARD_RE.match(line)
+        dashboard_match = PHOENIX_LIVE_DASHBOARD_RE.match(statement)
         if dashboard_match:
             route_path = _join_paths(prefix, dashboard_match.group("path"))
             routes.append(
@@ -7872,7 +7887,7 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
             continue
 
-        forward_match = PHOENIX_FORWARD_RE.match(line)
+        forward_match = PHOENIX_FORWARD_RE.match(statement)
         if forward_match:
             route_path = _join_paths(prefix, forward_match.group("path"))
             routes.append(
@@ -7889,7 +7904,7 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
             continue
 
-        resources_match = PHOENIX_LINE_RESOURCES_RE.match(line)
+        resources_match = PHOENIX_LINE_RESOURCES_RE.match(statement)
         if resources_match:
             route_path = _join_paths(prefix, resources_match.group("path"))
             routes.extend(
@@ -7901,14 +7916,53 @@ def _extract_phoenix_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
                     line_number,
                 )
             )
-            if re.search(r"\bdo\s*(?:#.*)?$", line):
+            if re.search(r"\bdo\s*(?:#.*)?$", statement):
                 nested_param = f":{_singular_name(Path(route_path).name)}_id"
                 scope_stack.append(_join_paths(resources_match.group("path"), nested_param))
             continue
 
-        if re.search(r"\bdo\s*(?:#.*)?$", line):
+        if re.search(r"\bdo\s*(?:#.*)?$", statement):
             scope_stack.append(None)
     return _dedupe_routes(routes)
+
+
+def _phoenix_continued_statement(lines: list[str], index: int) -> tuple[str, int]:
+    chunks = [lines[index].strip()]
+    if not _phoenix_statement_can_continue(chunks[0]):
+        return chunks[0], index
+    if _phoenix_statement_complete(chunks[0]):
+        return chunks[0], index
+    end_index = index
+    for offset, next_line in enumerate(lines[index + 1 : index + 7], start=1):
+        stripped = next_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        end_index = index + offset
+        chunks.append(stripped)
+        joined = " ".join(chunks)
+        if _phoenix_statement_complete(joined):
+            break
+    return " ".join(chunks), end_index
+
+
+def _phoenix_statement_can_continue(line: str) -> bool:
+    return bool(re.match(r"^(?:scope|(?:get|post|put|patch|delete|live|forward|resources)\b)", line.strip(), re.IGNORECASE))
+
+
+def _phoenix_statement_complete(statement: str) -> bool:
+    if re.match(r"^scope\b", statement, re.IGNORECASE):
+        return re.search(r"\bdo\s*(?:#.*)?$", statement) is not None
+    if re.match(r"^(?:live|(?:get|post|put|patch|delete|forward|resources)\b)", statement, re.IGNORECASE):
+        return statement.count("(") <= statement.count(")") and not statement.rstrip().endswith(",")
+    return True
+
+
+def _phoenix_scope_path(statement: str) -> str | None:
+    scope_match = PHOENIX_SCOPE_RE.match(statement)
+    if scope_match:
+        return scope_match.group("path")
+    named_match = PHOENIX_SCOPE_NAMED_PATH_RE.match(statement)
+    return named_match.group("path") if named_match else None
 
 
 def _phoenix_resource_route_facts(route_path: str, controller: str, args: str, file_path: str, line: int) -> list[ApiRouteFact]:
