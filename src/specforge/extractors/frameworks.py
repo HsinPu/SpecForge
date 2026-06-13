@@ -376,6 +376,8 @@ def detect_frameworks(
             ("ef-core", "data", name.startswith("microsoft.entityframeworkcore") or name.endswith(".entityframeworkcore")),
             ("spring", "backend", "spring-boot" in name or "springframework" in name),
             ("spring-security", "security", "spring-security" in name),
+            ("jpa", "data", "spring-boot-starter-data-jpa" in name or "jakarta.persistence" in name or "javax.persistence" in name),
+            ("hibernate", "data", "hibernate" in name),
             ("playframework", "backend", name in {"playframework/play-scala", "playframework/play-java"} or name.startswith("org.playframework/") or name.startswith("com.typesafe.play/") or name.startswith("play:")),
             ("play-ebean", "data", name == "playframework/play-ebean" or "play-ebean" in name),
             ("play-slick", "data", "play-slick" in name or name.endswith("/slick")),
@@ -543,6 +545,8 @@ def detect_frameworks(
             ("ejs", "frontend", lower.endswith(".ejs")),
             ("pug", "frontend", lower.endswith(".pug")),
             ("spring", "backend", lower.endswith((".java", ".kt")) and _looks_like_spring_source(root / file_fact.path)),
+            ("jpa", "data", lower.endswith((".java", ".kt", ".properties", ".yml", ".yaml")) and _looks_like_jpa_source(root / file_fact.path)),
+            ("hibernate", "data", lower.endswith((".java", ".kt", ".properties", ".yml", ".yaml")) and _looks_like_hibernate_source(root / file_fact.path)),
             ("java-web", "backend", "/src/main/webapp/" in f"/{lower}"),
             ("jsp", "frontend", lower.endswith(".jsp")),
             ("gin", "backend", lower.endswith(".go") and "gin-gonic/gin" in _read_text(root / file_fact.path).lower()),
@@ -824,6 +828,10 @@ def detect_frameworks(
             _add(detected, "stuartsierra-component", "runtime", "import", 0.85, import_fact.evidence)
         if module.startswith("org.springframework"):
             _add(detected, "spring", "backend", "import", 0.85, import_fact.evidence)
+        if module.startswith(("jakarta.persistence", "javax.persistence", "org.springframework.data.jpa")):
+            _add(detected, "jpa", "data", "import", 0.85, import_fact.evidence)
+        if module.startswith("org.hibernate"):
+            _add(detected, "hibernate", "data", "import", 0.85, import_fact.evidence)
         if module.startswith(("play.api", "play.mvc", "play.libs", "play.routing")):
             _add(detected, "playframework", "backend", "import", 0.85, import_fact.evidence)
         if module.startswith(("io.ktor.server", "io.ktor.application", "io.ktor.routing")):
@@ -998,6 +1006,27 @@ def _looks_like_spring_source(path: Path) -> bool:
         or "@RestController" in source
         or "@Controller" in source
         or "@RequestMapping" in source
+    )
+
+
+def _looks_like_jpa_source(path: Path) -> bool:
+    source = _read_text(path)
+    return (
+        "jakarta.persistence" in source
+        or "javax.persistence" in source
+        or "org.springframework.data.jpa" in source
+        or "JpaRepository" in source
+        or "@Entity" in source
+        or "spring.jpa." in source
+    )
+
+
+def _looks_like_hibernate_source(path: Path) -> bool:
+    source = _read_text(path)
+    return (
+        "org.hibernate" in source
+        or "spring.jpa.hibernate" in source
+        or "hibernate." in source
     )
 
 
