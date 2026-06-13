@@ -20,6 +20,7 @@ FRONTEND_FRAMEWORKS = {
     "html",
     "ionic",
     "capacitor",
+    "dash",
     "ios",
     "jsp",
     "mustache",
@@ -322,6 +323,7 @@ def detect_frameworks(
             ("xgboost", "ml", name == "xgboost" or name.startswith("xgboost")),
             ("streamlit", "frontend", name == "streamlit" or name.startswith("streamlit")),
             ("gradio", "frontend", name == "gradio" or name.startswith("gradio")),
+            ("dash", "frontend", name == "dash" or name.startswith("dash[")),
             ("grpc", "backend", name in {"grpcio", "grpcio-tools", "@grpc/grpc-js", "grpc"} or "google.golang.org/grpc" in name),
             ("electron", "desktop", name == "electron" or name.startswith("@electron/")),
             ("tauri", "desktop", name == "tauri" or name.startswith("@tauri-apps/")),
@@ -597,6 +599,7 @@ def detect_frameworks(
             ("hydra", "config", lower.endswith((".py", ".ipynb")) and _looks_like_hydra_source(root / file_fact.path)),
             ("streamlit", "frontend", lower.endswith(".py") and _looks_like_streamlit_source(root / file_fact.path)),
             ("gradio", "frontend", lower.endswith((".py", ".ipynb")) and _looks_like_gradio_source(root / file_fact.path)),
+            ("dash", "frontend", lower.endswith(".py") and _looks_like_dash_source(root / file_fact.path)),
             ("socketio", "backend", lower.endswith((".ts", ".tsx", ".js", ".jsx", ".py")) and _looks_like_socketio_source(root / file_fact.path)),
             ("authjs", "security", lower.endswith((".ts", ".tsx", ".js", ".jsx")) and _looks_like_authjs_source(root / file_fact.path)),
             ("nextauth", "security", lower.endswith((".ts", ".tsx", ".js", ".jsx")) and _looks_like_nextauth_source(root / file_fact.path)),
@@ -894,6 +897,8 @@ def detect_frameworks(
             _add(detected, "streamlit", "frontend", "import", 0.9, import_fact.evidence)
         if module == "gradio" or module.startswith("gradio."):
             _add(detected, "gradio", "frontend", "import", 0.9, import_fact.evidence)
+        if module == "dash" or module.startswith(("dash.", "dash_")):
+            _add(detected, "dash", "frontend", "import", 0.9, import_fact.evidence)
 
     return sorted(detected.values(), key=lambda item: (item.category, item.name, item.source))
 
@@ -1888,6 +1893,15 @@ def _looks_like_streamlit_source(path: Path) -> bool:
 def _looks_like_gradio_source(path: Path) -> bool:
     source = _read_text(path)
     return "import gradio" in source or "gradio." in source or re.search(r"\bgr\.(?:Interface|Blocks|ChatInterface|TabbedInterface)\b", source) is not None
+
+
+def _looks_like_dash_source(path: Path) -> bool:
+    source = _read_text(path)
+    return bool(
+        re.search(r"\b(?:dash\.)?Dash\s*\(", source)
+        or re.search(r"\bapp\.layout\s*=", source)
+        or re.search(r"@\s*app\.callback\s*\(", source)
+    )
 
 
 def _looks_like_riverpod_source(path: Path) -> bool:

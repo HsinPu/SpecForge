@@ -69,6 +69,19 @@ GRADIO_MARKDOWN_TITLE_RE = re.compile(
     r"\bgr\.Markdown\s*\(\s*(?P<quote>['\"])\s*#{1,2}\s*(?P<title>[^'\"\r\n]+)(?P=quote)",
     re.DOTALL,
 )
+DASH_APP_CALL_RE = re.compile(
+    r"\b(?:dash\.)?Dash\s*"
+    r"\((?P<body>(?:[^()'\"\[\]]+|'[^']*'|\"[^\"]*\"|\[[\s\S]{0,500}?\]){0,1800})\)",
+    re.IGNORECASE,
+)
+DASH_TITLE_RE = re.compile(
+    r"\btitle\s*=\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+DASH_HEADING_RE = re.compile(
+    r"\bhtml\.H[12]\s*\(\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
 TAG_RE = re.compile(r"<\.?(?P<tag>form|a|script|link|img|source)\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 FORM_TAG_RE = re.compile(r"<\.?form\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
 JSX_FORM_TAG_RE = re.compile(r"<(?P<tag>Form|fetcher\.Form)\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
@@ -166,6 +179,7 @@ def extract_static_frontend_facts(
     api_calls: list[ApiCallFact] = []
     streamlit_main_paths = _streamlit_main_paths(root, files)
     gradio_main_paths = _gradio_main_paths(root, files)
+    dash_main_paths = _dash_main_paths(root, files)
 
     for file_fact in files:
         if _is_astro_content_page_path(file_fact.path):
@@ -210,6 +224,18 @@ def extract_static_frontend_facts(
                         path=file_fact.path,
                         framework="gradio",
                         kind="gradio-app-route",
+                        evidence=page.evidence,
+                    )
+                )
+            elif _looks_like_dash_source(source):
+                page = _extract_dash_page(file_fact, source, file_fact.path in dash_main_paths)
+                pages.append(page)
+                routes.append(
+                    FrontendRouteFact(
+                        route=page.route,
+                        path=file_fact.path,
+                        framework="dash",
+                        kind="dash-app-route",
                         evidence=page.evidence,
                     )
                 )
@@ -270,7 +296,7 @@ def build_frontend_maps(
     routes_by_route = _frontend_routes_by_route(frontend_routes)
     for page in pages:
         page_assets = [asset.asset_path for asset in assets if asset.source == page.path]
-        route_sources = routes_by_route.get(page.route, [])
+        route_sources = _compatible_route_sources(page, routes_by_route.get(page.route, []))
         route_dir = _route_group_dir(page.path)
         related_sources = _dedupe([page.path, *[item.path for item in route_sources]])
         allow_group_fallback = _allow_route_group_fallback(page.path)
@@ -377,6 +403,16 @@ def _primary_route_source(routes: list[FrontendRouteFact]) -> FrontendRouteFact 
     if not routes:
         return None
     return next((route for route in routes if route.path.replace("\\", "/").endswith("+page.svelte")), routes[0])
+
+
+def _compatible_route_sources(page: PageFact, routes: list[FrontendRouteFact]) -> list[FrontendRouteFact]:
+    if page.kind == "static-page" and page.template_engine is None:
+        return [
+            route
+            for route in routes
+            if route.path == page.path or route.framework == "static-site"
+        ]
+    return routes
 
 
 def _route_group_dir(path: str) -> str:
@@ -658,6 +694,94 @@ def _gradio_route(path: str) -> str:
     stem = Path(path.replace("\\", "/")).stem
     slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
     return _ensure_route(slug or "app")
+
+
+def _extract_dash_page(file_fact: FileFact, source: str, is_main: bool) -> PageFact:
+    title, title_line = _dash_title(source)
+    evidence_line = title_line or _dash_signal_line(source)
+    return PageFact(
+        path=file_fact.path,
+        route="/" if is_main else _dash_route(file_fact.path),
+        title=title,
+        kind="dash-app",
+        template_engine="dash",
+        evidence=Evidence(
+            file=file_fact.path,
+            kind="page",
+            line_start=evidence_line,
+            line_end=evidence_line,
+        ),
+    )
+
+
+def _dash_main_paths(root: Path, files: list[FileFact]) -> set[str]:
+    candidates: list[tuple[tuple[int, str], str]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        source = _read(root, file_fact)
+        if not _looks_like_dash_source(source):
+            continue
+        candidates.append((_dash_main_score(file_fact.path), file_fact.path))
+    if not candidates:
+        return set()
+    return {sorted(candidates, key=lambda item: item[0])[0][1]}
+
+
+def _dash_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "dash_app.py": 1,
+        "dashboard.py": 2,
+        "main.py": 3,
+        "usage.py": 4,
+        "run.py": 5,
+    }.get(name, 8)
+    return (priority + lower.count("/"), lower)
+
+
+def _looks_like_dash_source(source: str) -> bool:
+    return bool(
+        re.search(r"\b(?:dash\.)?Dash\s*\(", source)
+        or re.search(r"\bapp\.layout\s*=", source)
+        or re.search(r"@\s*app\.callback\s*\(", source)
+    )
+
+
+def _dash_title(source: str) -> tuple[str | None, int | None]:
+    app_match = DASH_APP_CALL_RE.search(source)
+    if app_match:
+        title_match = DASH_TITLE_RE.search(app_match.group("body"))
+        if title_match:
+            line = _line_for_offset(source, app_match.start("body") + title_match.start())
+            return _clean_dash_title(title_match.group("title")), line
+    heading_match = DASH_HEADING_RE.search(source)
+    if heading_match:
+        line = _line_for_offset(source, heading_match.start())
+        return _clean_dash_title(heading_match.group("title")), line
+    return None, None
+
+
+def _clean_dash_title(title: str) -> str:
+    return " ".join(title.split()).strip()
+
+
+def _dash_signal_line(source: str) -> int:
+    match = re.search(
+        r"\b(?:dash\.)?Dash\s*\(|\bapp\.layout\s*=|@\s*app\.callback\s*\(",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _dash_route(path: str) -> str:
+    stem = Path(path.replace("\\", "/")).stem
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
+    return _ensure_route(slug or "dash")
 
 
 def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:

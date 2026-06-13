@@ -222,6 +222,24 @@ GRADIO_PROP_RE = re.compile(
     r"(?P<value>\[[\s\S]{0,400}?\]|(?P<quote>['\"]).*?(?P=quote)|[^,\)\r\n]+)",
     re.IGNORECASE,
 )
+DASH_COMPONENT_RE = re.compile(
+    r"\b(?P<namespace>html|dcc|dash_table|dbc|daq|dash_[A-Za-z_]\w*)\."
+    r"(?P<kind>[A-Z][A-Za-z0-9_]*)\s*"
+    r"\((?P<body>(?:[^()'\"\[\]]+|'[^']*'|\"[^\"]*\"|\[[\s\S]{0,700}?\]){0,2200})\)",
+    re.IGNORECASE,
+)
+DASH_COMPONENT_START_RE = re.compile(
+    r"\b(?P<namespace>html|dcc|dash_table|dbc|daq|dash_[A-Za-z_]\w*)\."
+    r"(?P<kind>[A-Z][A-Za-z0-9_]*)\s*\(",
+    re.IGNORECASE,
+)
+DASH_STRING_ARG_RE = re.compile(r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)", re.DOTALL)
+DASH_TOP_LEVEL_PROP_RE = re.compile(
+    r"\b(?P<key>id|children|value|placeholder|options|topics|broker_url|broker_port|"
+    r"broker_path|className|style)\s*=\s*"
+    r"(?P<value>[\s\S]+?)\s*$",
+    re.IGNORECASE,
+)
 ANGULAR_COMPONENT_RE = re.compile(
     r"@Component\s*\(\s*{(?P<meta>.*?)}\s*\)\s*export\s+class\s+(?P<name>[A-Za-z_]\w*)",
     re.DOTALL,
@@ -930,6 +948,10 @@ def _extract_components(
         gradio_components = _extract_gradio_components(file_fact, source)
         if gradio_components:
             return gradio_components
+    if normalized.endswith(".py") and _looks_like_dash_source(source):
+        dash_components = _extract_dash_components(file_fact, source)
+        if dash_components:
+            return dash_components
     if "component$(" in source:
         qwik_components = _extract_qwik_components(file_fact, source)
         if qwik_components:
@@ -1616,6 +1638,143 @@ def _looks_like_gradio_source(source: str) -> bool:
             r"\bgradio\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b",
             source,
         )
+    )
+
+
+def _extract_dash_components(file_fact: FileFact, source: str) -> list[ComponentFact]:
+    components: list[ComponentFact] = []
+    for kind, body, offset in _iter_dash_component_calls(source):
+        props = _dash_component_props(body)
+        label = _dash_component_label(kind, body, props)
+        if kind in {"Div", "Span"} and not label and not props:
+            continue
+        name = f"{kind}:{label}" if label else kind
+        line = _line_for_offset(source, offset)
+        components.append(
+            ComponentFact(
+                name=name,
+                path=file_fact.path,
+                framework="dash",
+                props=props,
+                hooks=[],
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-component",
+                    line_start=line,
+                    line_end=line,
+                ),
+            )
+        )
+    return _dedupe_components(components)
+
+
+def _iter_dash_component_calls(source: str) -> list[tuple[str, str, int]]:
+    calls: list[tuple[str, str, int]] = []
+    for match in DASH_COMPONENT_START_RE.finditer(source):
+        open_paren = match.end() - 1
+        close_paren = _matching_paren_index(source, open_paren)
+        if close_paren is None:
+            continue
+        calls.append((match.group("kind"), source[open_paren + 1 : close_paren], match.start()))
+    return calls
+
+
+def _matching_paren_index(source: str, open_paren: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for index in range(open_paren, len(source)):
+        char = source[index]
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _dash_component_label(kind: str, body: str, props: list[str]) -> str | None:
+    prop_values = {prop.split("=", 1)[0].lower(): prop.split("=", 1)[1] for prop in props if "=" in prop}
+    for key in ("id", "children", "value", "placeholder"):
+        value = prop_values.get(key)
+        if value:
+            return value.strip("`")
+    if kind in {"H1", "H2", "H3", "H4", "H5", "H6", "P", "Button"}:
+        first_arg = next(iter(_split_top_level_args(body)), "")
+        string_match = DASH_STRING_ARG_RE.fullmatch(first_arg.strip())
+        if string_match:
+            return _clean_dash_prop_value(string_match.group("value"))
+    return None
+
+
+def _dash_component_props(body: str) -> list[str]:
+    props: list[str] = []
+    for part in _split_top_level_args(body):
+        match = DASH_TOP_LEVEL_PROP_RE.match(part.strip())
+        if not match:
+            continue
+        key = match.group("key")
+        value = _clean_dash_prop_value(match.group("value"))
+        if value:
+            props.append(f"{key}={value}")
+    return _dedupe(props)
+
+
+def _split_top_level_args(body: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for index, char in enumerate(body):
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(body[start:index].strip())
+            start = index + 1
+    tail = body[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _clean_dash_prop_value(value: str) -> str:
+    cleaned = " ".join(value.strip().strip(",").strip().strip("'\"").split())
+    if len(cleaned) > 80:
+        return cleaned[:77].rstrip() + "..."
+    return cleaned
+
+
+def _looks_like_dash_source(source: str) -> bool:
+    return bool(
+        re.search(r"\b(?:dash\.)?Dash\s*\(", source)
+        or re.search(r"\bapp\.layout\s*=", source)
+        or re.search(r"@\s*app\.callback\s*\(", source)
     )
 
 
@@ -2813,6 +2972,8 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
     if "streamlit" in frontend_frameworks and lower.endswith(".py"):
         return True
     if "gradio" in frontend_frameworks and lower.endswith(".py"):
+        return True
+    if "dash" in frontend_frameworks and lower.endswith(".py"):
         return True
     if {"expo", "react-native", "react-navigation"} & frontend_frameworks and lower.endswith((".tsx", ".jsx", ".ts", ".js")):
         return True

@@ -713,6 +713,10 @@ def is_generated_path(relative_path: str) -> bool:
         return True
     if name.endswith((".min.js", ".bundle.js", ".chunk.js")):
         return True
+    if re.fullmatch(r"[0-9a-f]{6,}-.+hmr\.js", name):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9_]+/output\.js", normalized) or normalized.endswith("/deps/output.js"):
+        return True
     if name.endswith((".pb.go", "_grpc.pb.go", "_pb2.py", "_pb2_grpc.py", ".pb.ts", ".pb.js")):
         return True
     if name.endswith((".generated.ts", ".generated.tsx", ".generated.js", ".generated.jsx")):
@@ -1273,6 +1277,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
     result.extend(_swiftui_app_entrypoints(root, files))
     result.extend(_streamlit_entrypoints(root, files))
     result.extend(_gradio_entrypoints(root, files))
+    result.extend(_dash_entrypoints(root, files))
     result.extend(_django_entrypoints(root))
     result.extend(_symfony_entrypoints(root))
     result.extend(_laravel_entrypoints(root))
@@ -1387,6 +1392,7 @@ def collect_project_commands(root: Path, files: list[FileFact]) -> list[CommandF
     commands.extend(_wordpress_cli_commands(root, files))
     commands.extend(_streamlit_project_commands(root, files))
     commands.extend(_gradio_project_commands(root, files))
+    commands.extend(_dash_project_commands(root, files))
     commands.extend(_django_project_commands(root))
     commands.extend(_symfony_project_commands(root))
     commands.extend(_rails_project_commands(root))
@@ -2409,6 +2415,49 @@ def _gradio_project_commands(root: Path, files: list[FileFact]) -> list[CommandF
     return commands
 
 
+def _dash_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact]:
+    main_file = _dash_main_file(root, files)
+    if not main_file:
+        return []
+    source = _read_manifest_text(root / main_file.path)
+    line = _dash_signal_line(source)
+    return [
+        EntrypointFact(
+            path=main_file.path,
+            kind="dash-app",
+            command=f"python {main_file.path}",
+            evidence=Evidence(file=main_file.path, kind="entrypoint", line_start=line, line_end=line),
+        )
+    ]
+
+
+def _dash_project_commands(root: Path, files: list[FileFact]) -> list[CommandFact]:
+    main_file = _dash_main_file(root, files)
+    commands: list[CommandFact] = []
+    if main_file:
+        commands.append(
+            _command(
+                main_file.path,
+                f"python {main_file.path}",
+                "Run Dash app",
+                [main_file.path],
+                [],
+            )
+        )
+    has_python_tests = any(file.language == "python" and file.role == "test" for file in files)
+    if main_file and (_project_uses_pytest(root) or has_python_tests):
+        commands.append(
+            _command(
+                _python_test_command_source(root, main_file.path),
+                "pytest",
+                "Run pytest suite",
+                [],
+                [],
+            )
+        )
+    return commands
+
+
 def _streamlit_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
     candidates: list[tuple[tuple[int, str], FileFact]] = []
     for file_fact in files:
@@ -2430,6 +2479,19 @@ def _gradio_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
         if not _looks_like_gradio_file(root, file_fact):
             continue
         candidates.append((_gradio_main_score(file_fact.path), file_fact))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def _dash_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
+    candidates: list[tuple[tuple[int, str], FileFact]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        if not _looks_like_dash_file(root, file_fact):
+            continue
+        candidates.append((_dash_main_score(file_fact.path), file_fact))
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0])[0][1]
@@ -2467,6 +2529,21 @@ def _gradio_main_score(path: str) -> tuple[int, str]:
     return (priority + launch_bonus + lower.count("/"), lower)
 
 
+def _dash_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "dash_app.py": 1,
+        "dashboard.py": 2,
+        "main.py": 3,
+        "usage.py": 4,
+        "run.py": 5,
+    }.get(name, 8)
+    return (priority + lower.count("/"), lower)
+
+
 def _looks_like_streamlit_file(root: Path, file_fact: FileFact) -> bool:
     source = _read_manifest_text(root / file_fact.path)
     return _looks_like_streamlit_source(source)
@@ -2475,6 +2552,11 @@ def _looks_like_streamlit_file(root: Path, file_fact: FileFact) -> bool:
 def _looks_like_gradio_file(root: Path, file_fact: FileFact) -> bool:
     source = _read_manifest_text(root / file_fact.path)
     return _looks_like_gradio_source(source)
+
+
+def _looks_like_dash_file(root: Path, file_fact: FileFact) -> bool:
+    source = _read_manifest_text(root / file_fact.path)
+    return _looks_like_dash_source(source)
 
 
 def _looks_like_streamlit_source(source: str) -> bool:
@@ -2500,6 +2582,14 @@ def _looks_like_gradio_source(source: str) -> bool:
     )
 
 
+def _looks_like_dash_source(source: str) -> bool:
+    return bool(
+        re.search(r"\b(?:dash\.)?Dash\s*\(", source)
+        or re.search(r"\bapp\.layout\s*=", source)
+        or re.search(r"@\s*app\.callback\s*\(", source)
+    )
+
+
 def _streamlit_signal_line(source: str) -> int:
     match = re.search(
         r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)|"
@@ -2514,6 +2604,15 @@ def _gradio_signal_line(source: str) -> int:
     match = re.search(
         r"^\s*(?:import\s+gradio\b|from\s+gradio\s+import\b)|"
         r"\bgr\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b|\bgradio\.",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _dash_signal_line(source: str) -> int:
+    match = re.search(
+        r"\b(?:dash\.)?Dash\s*\(|\bapp\.layout\s*=|@\s*app\.callback\s*\(",
         source,
         re.MULTILINE,
     )
