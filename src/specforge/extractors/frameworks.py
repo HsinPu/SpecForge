@@ -257,6 +257,7 @@ def detect_frameworks(
             ("dio", "frontend", name == "dio"),
             ("freezed", "frontend", name in {"freezed", "freezed_annotation"}),
             ("android", "mobile", name.startswith("androidx.") or name.startswith("com.android.")),
+            ("room", "data", name == "androidx.room" or name.startswith("androidx.room:") or name.endswith(".android.room")),
             ("nativescript", "mobile", name in {"nativescript", "tns-core-modules"} or name.startswith("@nativescript/") or name.startswith("nativescript-")),
             ("ember", "frontend", name == "ember-source" or name.startswith("@ember/")),
             ("blazor", "frontend", "microsoft.aspnetcore.blazor" in name or "microsoft.aspnetcore.components" in name),
@@ -564,6 +565,7 @@ def detect_frameworks(
             ("dio", "frontend", lower.endswith(".dart") and _looks_like_dio_source(root / file_fact.path)),
             ("freezed", "frontend", lower.endswith(".dart") and _looks_like_freezed_source(root / file_fact.path)),
             ("android", "mobile", lower.endswith("androidmanifest.xml")),
+            ("room", "data", lower.endswith((".kt", ".java", ".kts", ".gradle", ".gradle.kts", ".toml")) and _looks_like_room_source(root / file_fact.path)),
             ("maui", "mobile", lower.endswith(".xaml") and _looks_like_maui_xaml(root / file_fact.path)),
             ("wpf", "frontend", lower.endswith(".xaml") and _looks_like_wpf_xaml(root / file_fact.path)),
             ("avalonia", "frontend", lower.endswith((".xaml", ".axaml")) and _looks_like_avalonia_source(root / file_fact.path)),
@@ -631,6 +633,8 @@ def detect_frameworks(
                 _add(detected, "android", "mobile", "gradle", 0.85, file_fact.evidence)
             if "androidx.compose" in source or "composeOptions" in source:
                 _add(detected, "jetpack-compose", "mobile", "gradle", 0.8, file_fact.evidence)
+            if "androidx.room" in source or "room-runtime" in source or "room-ktx" in source:
+                _add(detected, "room", "data", "gradle", 0.85, file_fact.evidence)
 
     pom_path = root / "pom.xml"
     if pom_path.exists() and "<packaging>war</packaging>" in pom_path.read_text(encoding="utf-8"):
@@ -842,6 +846,8 @@ def detect_frameworks(
             _add(detected, "play-slick", "data", "import", 0.85, import_fact.evidence)
         if module.startswith("androidx."):
             _add(detected, "android", "mobile", "import", 0.8, import_fact.evidence)
+        if module.startswith("androidx.room"):
+            _add(detected, "room", "data", "import", 0.85, import_fact.evidence)
         if module.startswith("androidx.compose"):
             _add(detected, "jetpack-compose", "mobile", "import", 0.85, import_fact.evidence)
         if module.startswith("airflow"):
@@ -1016,8 +1022,19 @@ def _looks_like_jpa_source(path: Path) -> bool:
         or "javax.persistence" in source
         or "org.springframework.data.jpa" in source
         or "JpaRepository" in source
-        or "@Entity" in source
         or "spring.jpa." in source
+    )
+
+
+def _looks_like_room_source(path: Path) -> bool:
+    source = _read_text(path)
+    return (
+        "androidx.room" in source
+        or 'id("androidx.room")' in source
+        or 'id = "androidx.room"' in source
+        or "room-runtime" in source
+        or "room-ktx" in source
+        or "room-compiler" in source
     )
 
 
