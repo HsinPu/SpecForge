@@ -75,6 +75,17 @@ HEEX_INPUT_RE = re.compile(
     r"<\.input\b(?P<attrs>(?:=>|->|[^>])*?)(?:/?>)",
     re.IGNORECASE | re.DOTALL,
 )
+RAZOR_FIELD_TAG_RE = re.compile(
+    r"<(?:nop-editor|nop-select|nop-textarea|nop-override-store-checkbox|nop-bb-code-editor)"
+    r"\b(?P<attrs>[^>]*)>",
+    re.IGNORECASE | re.DOTALL,
+)
+RAZOR_HTML_HELPER_FIELD_RE = re.compile(
+    r"@\s*Html\.(?:EditorFor|TextBoxFor|HiddenFor|CheckBoxFor|DropDownListFor|TextAreaFor)"
+    r"\s*\(\s*(?:[A-Za-z_]\w*)\s*=>\s*(?:[A-Za-z_]\w*)\."
+    r"(?P<name>[A-Za-z_]\w*(?:\[[^\]]+\])?(?:\.[A-Za-z_]\w*)*)",
+    re.IGNORECASE,
+)
 FETCH_RE = re.compile(r"(?<!\.)\bfetch\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`](?P<args>[^)]*)\)", re.DOTALL)
 AXIOS_RE = re.compile(
     r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`]",
@@ -971,17 +982,29 @@ def _form_fields(source: str) -> list[str]:
     fields: list[str] = []
     for match in INPUT_RE.finditer(source):
         attrs = _attrs(match.group("attrs"))
-        name = _clean_form_field_name(
-            attrs.get("name")
-            or attrs.get("th:field")
-            or attrs.get("data-th-field")
-            or attrs.get("id")
-        )
+        if attrs.get("asp-for"):
+            name = _clean_razor_form_field_name(attrs.get("asp-for"))
+        else:
+            name = _clean_form_field_name(
+                attrs.get("name")
+                or attrs.get("th:field")
+                or attrs.get("data-th-field")
+                or attrs.get("id")
+            )
         if name:
             fields.append(name)
     for match in HEEX_INPUT_RE.finditer(source):
         attrs = _attrs(match.group("attrs"))
         name = _clean_heex_form_field_name(attrs.get("field") or attrs.get("name") or attrs.get("id"))
+        if name:
+            fields.append(name)
+    for match in RAZOR_FIELD_TAG_RE.finditer(source):
+        attrs = _attrs(match.group("attrs"))
+        name = _clean_razor_form_field_name(attrs.get("asp-for") or attrs.get("asp-input"))
+        if name:
+            fields.append(name)
+    for match in RAZOR_HTML_HELPER_FIELD_RE.finditer(source):
+        name = _clean_razor_form_field_name(match.group("name"))
         if name:
             fields.append(name)
     return _dedupe(fields)
@@ -998,6 +1021,22 @@ def _clean_heex_form_field_name(value: str | None) -> str | None:
     if match:
         return match.group("name")
     return cleaned.lstrip(":") or None
+
+
+def _clean_razor_form_field_name(value: str | None) -> str | None:
+    cleaned = _clean_form_field_name(value)
+    if not cleaned:
+        return None
+    cleaned = cleaned.strip()
+    if cleaned.startswith("@(") and cleaned.endswith(")"):
+        cleaned = cleaned[2:-1].strip()
+    cleaned = cleaned.lstrip("@")
+    if cleaned.startswith("Model."):
+        cleaned = cleaned.removeprefix("Model.")
+    cleaned = re.sub(r"\[(?:item|i|index)\]", "[]", cleaned)
+    if re.search(r"\s|=>", cleaned):
+        return None
+    return cleaned or None
 
 
 def _clean_form_field_name(value: str | None) -> str | None:
