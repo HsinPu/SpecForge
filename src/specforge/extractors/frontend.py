@@ -208,6 +208,20 @@ STREAMLIT_SESSION_STATE_RE = re.compile(
 STREAMLIT_SESSION_STATE_CONTAINS_RE = re.compile(
     r"(?P<quote>['\"])(?P<key>[^'\"]+)(?P=quote)\s+(?:not\s+)?in\s+st\.session_state"
 )
+GRADIO_COMPONENT_RE = re.compile(
+    r"\b(?:gr|gradio)\."
+    r"(?P<kind>Blocks|Interface|ChatInterface|TabbedInterface|Number|Dropdown|"
+    r"Button|Textbox|TextArea|Markdown|Examples|Image|Audio|Video|File|Dataframe|"
+    r"Checkbox|CheckboxGroup|Radio|Slider|HTML|JSON|Plot|Gallery|Chatbot)\s*"
+    r"\((?P<body>(?:[^()'\"\[\]]+|'[^']*'|\"[^\"]*\"|\[[\s\S]{0,500}?\]){0,1800})\)",
+    re.IGNORECASE,
+)
+GRADIO_STRING_ARG_RE = re.compile(r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)", re.DOTALL)
+GRADIO_PROP_RE = re.compile(
+    r"\b(?P<key>label|title|value|variant|inputs|outputs|fn|choices)\s*=\s*"
+    r"(?P<value>\[[\s\S]{0,400}?\]|(?P<quote>['\"]).*?(?P=quote)|[^,\)\r\n]+)",
+    re.IGNORECASE,
+)
 ANGULAR_COMPONENT_RE = re.compile(
     r"@Component\s*\(\s*{(?P<meta>.*?)}\s*\)\s*export\s+class\s+(?P<name>[A-Za-z_]\w*)",
     re.DOTALL,
@@ -912,6 +926,10 @@ def _extract_components(
         compose_components = _extract_compose_components(file_fact, source)
         if compose_components:
             return compose_components
+    if normalized.endswith(".py") and _looks_like_gradio_source(source):
+        gradio_components = _extract_gradio_components(file_fact, source)
+        if gradio_components:
+            return gradio_components
     if "component$(" in source:
         qwik_components = _extract_qwik_components(file_fact, source)
         if qwik_components:
@@ -1523,6 +1541,79 @@ def _looks_like_streamlit_source(source: str) -> bool:
             r"\bst\."
             r"(?:set_page_config|title|header|write|markdown|sidebar|session_state|"
             r"text_input|button|chat_input)\b",
+            source,
+        )
+    )
+
+
+def _extract_gradio_components(file_fact: FileFact, source: str) -> list[ComponentFact]:
+    components: list[ComponentFact] = []
+    for match in GRADIO_COMPONENT_RE.finditer(source):
+        kind = _normalize_gradio_component_kind(match.group("kind"))
+        body = match.group("body")
+        props = _gradio_component_props(body)
+        label = _gradio_component_label(kind, body, props)
+        name = f"{kind}:{label}" if label else kind
+        line = _line_for_offset(source, match.start())
+        components.append(
+            ComponentFact(
+                name=name,
+                path=file_fact.path,
+                framework="gradio",
+                props=props,
+                hooks=[],
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-component",
+                    line_start=line,
+                    line_end=line,
+                ),
+            )
+        )
+    return _dedupe_components(components)
+
+
+def _normalize_gradio_component_kind(kind: str) -> str:
+    normalized = kind[:1].upper() + kind[1:]
+    return {"Textarea": "TextArea", "Json": "JSON", "Html": "HTML"}.get(normalized, normalized)
+
+
+def _gradio_component_label(kind: str, body: str, props: list[str]) -> str | None:
+    if kind == "Examples":
+        return None
+    prop_values = {prop.split("=", 1)[0].lower(): prop.split("=", 1)[1] for prop in props if "=" in prop}
+    for key in ("title", "label", "value"):
+        value = prop_values.get(key)
+        if value:
+            return value.strip("`")
+    first_arg = GRADIO_STRING_ARG_RE.search(body)
+    if first_arg:
+        return _clean_gradio_prop_value(first_arg.group("value"))
+    return None
+
+
+def _gradio_component_props(body: str) -> list[str]:
+    props: list[str] = []
+    for match in GRADIO_PROP_RE.finditer(body):
+        key = match.group("key")
+        value = _clean_gradio_prop_value(match.group("value"))
+        if value:
+            props.append(f"{key}={value}")
+    return _dedupe(props)
+
+
+def _clean_gradio_prop_value(value: str) -> str:
+    cleaned = " ".join(value.strip().strip(",").strip().strip("'\"").split())
+    if len(cleaned) > 80:
+        return cleaned[:77].rstrip() + "..."
+    return cleaned
+
+
+def _looks_like_gradio_source(source: str) -> bool:
+    return bool(
+        re.search(r"\bgr\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b", source)
+        or re.search(
+            r"\bgradio\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b",
             source,
         )
     )
@@ -2720,6 +2811,8 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
     if {"maui", "wpf", "avalonia"} & frontend_frameworks and lower.endswith((".xaml", ".axaml")):
         return True
     if "streamlit" in frontend_frameworks and lower.endswith(".py"):
+        return True
+    if "gradio" in frontend_frameworks and lower.endswith(".py"):
         return True
     if {"expo", "react-native", "react-navigation"} & frontend_frameworks and lower.endswith((".tsx", ".jsx", ".ts", ".js")):
         return True
@@ -4049,6 +4142,23 @@ def _dedupe(values: object) -> list[str]:
     for value in values:
         if value and value not in result:
             result.append(str(value))
+    return result
+
+
+def _dedupe_components(components: list[ComponentFact]) -> list[ComponentFact]:
+    seen: set[tuple[str, str, str, int | None]] = set()
+    result: list[ComponentFact] = []
+    for component in components:
+        key = (
+            component.path,
+            component.framework,
+            component.name,
+            component.evidence.line_start,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(component)
     return result
 
 

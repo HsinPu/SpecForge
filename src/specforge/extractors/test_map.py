@@ -366,7 +366,7 @@ def _is_python_test_support_artifact(name: str, parts: set[str]) -> bool:
         return False
     if name in {"__init__.py", "conftest.py"}:
         return True
-    return "tests" in parts and not (name.startswith("test_") or name.endswith("_test.py"))
+    return "tests" in parts and not (name.startswith("test_") or name.endswith(("_test.py", "_tests.py")))
 
 
 def _should_match_components(test_file: FileFact) -> bool:
@@ -743,7 +743,23 @@ def _match_command(
             continue
         if name and _contains_token(search, name):
             return "cli-command", command.name, "medium"
+        if _command_python_module_is_imported(search.haystack, command.path):
+            return "cli-command", command.name, "medium"
     return None
+
+
+def _command_python_module_is_imported(haystack: str, command_path: str) -> bool:
+    normalized = command_path.replace("\\", "/")
+    if not normalized.endswith(".py"):
+        return False
+    module = normalized[:-3].replace("/", ".")
+    if not module or module.endswith(".__init__"):
+        return False
+    escaped = re.escape(module)
+    return bool(
+        re.search(rf"\bfrom\s+{escaped}\s+import\b", haystack)
+        or re.search(rf"\bimport\s+{escaped}(?:\b|\s*,)", haystack)
+    )
 
 
 def _is_generic_test_runner_command(command_name: str) -> bool:

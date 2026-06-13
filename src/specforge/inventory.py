@@ -735,7 +735,7 @@ def is_test_path(relative_path: str) -> bool:
     normalized = relative_path.replace("\\", "/").lower()
     name = Path(normalized).name
     is_root_python_test = "/" not in normalized and (
-        name.startswith("test_") or name.endswith("_test.py")
+        name.startswith("test_") or name.endswith(("_test.py", "_tests.py"))
     )
     is_test_named_source = name.endswith(
         (
@@ -1272,6 +1272,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
     result.extend(_swift_vapor_entrypoints(root))
     result.extend(_swiftui_app_entrypoints(root, files))
     result.extend(_streamlit_entrypoints(root, files))
+    result.extend(_gradio_entrypoints(root, files))
     result.extend(_django_entrypoints(root))
     result.extend(_symfony_entrypoints(root))
     result.extend(_laravel_entrypoints(root))
@@ -1385,6 +1386,7 @@ def collect_project_commands(root: Path, files: list[FileFact]) -> list[CommandF
     commands.extend(_composer_script_commands(root))
     commands.extend(_wordpress_cli_commands(root, files))
     commands.extend(_streamlit_project_commands(root, files))
+    commands.extend(_gradio_project_commands(root, files))
     commands.extend(_django_project_commands(root))
     commands.extend(_symfony_project_commands(root))
     commands.extend(_rails_project_commands(root))
@@ -2355,6 +2357,58 @@ def _streamlit_project_commands(root: Path, files: list[FileFact]) -> list[Comma
     return commands
 
 
+def _gradio_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact]:
+    main_file = _gradio_main_file(root, files)
+    if not main_file:
+        return []
+    source = _read_manifest_text(root / main_file.path)
+    line = _gradio_signal_line(source)
+    return [
+        EntrypointFact(
+            path=main_file.path,
+            kind="gradio-app",
+            command=f"python {main_file.path}",
+            evidence=Evidence(file=main_file.path, kind="entrypoint", line_start=line, line_end=line),
+        )
+    ]
+
+
+def _gradio_project_commands(root: Path, files: list[FileFact]) -> list[CommandFact]:
+    main_file = _gradio_main_file(root, files)
+    commands: list[CommandFact] = []
+    if main_file:
+        commands.extend(
+            [
+                _command(
+                    main_file.path,
+                    f"python {main_file.path}",
+                    "Run Gradio app",
+                    [main_file.path],
+                    [],
+                ),
+                _command(
+                    main_file.path,
+                    f"gradio {main_file.path}",
+                    "Run Gradio app with reload",
+                    [main_file.path],
+                    [],
+                ),
+            ]
+        )
+    has_python_tests = any(file.language == "python" and file.role == "test" for file in files)
+    if main_file and (_project_uses_pytest(root) or has_python_tests):
+        commands.append(
+            _command(
+                _python_test_command_source(root, main_file.path),
+                "pytest",
+                "Run pytest suite",
+                [],
+                [],
+            )
+        )
+    return commands
+
+
 def _streamlit_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
     candidates: list[tuple[tuple[int, str], FileFact]] = []
     for file_fact in files:
@@ -2363,6 +2417,19 @@ def _streamlit_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
         if not _looks_like_streamlit_file(root, file_fact):
             continue
         candidates.append((_streamlit_main_score(file_fact.path), file_fact))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def _gradio_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
+    candidates: list[tuple[tuple[int, str], FileFact]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        if not _looks_like_gradio_file(root, file_fact):
+            continue
+        candidates.append((_gradio_main_score(file_fact.path), file_fact))
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0])[0][1]
@@ -2385,9 +2452,29 @@ def _streamlit_main_score(path: str) -> tuple[int, str]:
     return (page_penalty + priority + depth_penalty, lower)
 
 
+def _gradio_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "gradio_app.py": 1,
+        "demo.py": 2,
+        "main.py": 3,
+        "run.py": 4,
+    }.get(name, 8)
+    launch_bonus = 0 if lower.count("/") == 0 else 2
+    return (priority + launch_bonus + lower.count("/"), lower)
+
+
 def _looks_like_streamlit_file(root: Path, file_fact: FileFact) -> bool:
     source = _read_manifest_text(root / file_fact.path)
     return _looks_like_streamlit_source(source)
+
+
+def _looks_like_gradio_file(root: Path, file_fact: FileFact) -> bool:
+    source = _read_manifest_text(root / file_fact.path)
+    return _looks_like_gradio_source(source)
 
 
 def _looks_like_streamlit_source(source: str) -> bool:
@@ -2403,10 +2490,30 @@ def _looks_like_streamlit_source(source: str) -> bool:
     )
 
 
+def _looks_like_gradio_source(source: str) -> bool:
+    return bool(
+        re.search(r"\bgr\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b", source)
+        or re.search(
+            r"\bgradio\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b",
+            source,
+        )
+    )
+
+
 def _streamlit_signal_line(source: str) -> int:
     match = re.search(
         r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)|"
         r"\bst\.(?:set_page_config|title|header|write)\b|\bstreamlit\.",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _gradio_signal_line(source: str) -> int:
+    match = re.search(
+        r"^\s*(?:import\s+gradio\b|from\s+gradio\s+import\b)|"
+        r"\bgr\.(?:Interface|Blocks|ChatInterface|TabbedInterface|load)\b|\bgradio\.",
         source,
         re.MULTILINE,
     )
