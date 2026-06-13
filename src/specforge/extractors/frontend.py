@@ -242,6 +242,12 @@ KOTLIN_COMPOSABLE_RE = re.compile(
     r"@Composable\s*(?:\r?\n\s*)+(?:private\s+|internal\s+|public\s+)?fun\s+(?P<name>[A-Za-z_]\w*)\s*\((?P<args>[^)]*)\)",
     re.MULTILINE,
 )
+KOTLIN_NAV3_ENTRY_RE = re.compile(r"\bentry\s*<\s*(?P<key>[A-Za-z_]\w*)\s*>\s*(?:\(|\{)")
+KOTLIN_COMPOSE_NAV_CALL_RE = re.compile(
+    r"\b(?P<callee>composable|navigation)\s*(?:<\s*(?P<key>[A-Za-z_]\w*)\s*>)?\s*(?P<open>\(|\{)",
+)
+KOTLIN_NAV_ROUTE_ARG_RE = re.compile(r"\broute\s*=\s*['\"](?P<route>[^'\"\r\n]+)['\"]")
+KOTLIN_NAV_FIRST_ARG_RE = re.compile(r"^\s*['\"](?P<route>[^'\"\r\n]+)['\"]")
 KOTLIN_VIEWMODEL_RE = re.compile(r"\bclass\s+(?P<name>[A-Za-z_]\w*ViewModel)\b[\s\S]{0,400}?:\s*ViewModel\s*\(")
 KOTLIN_STATE_FLOW_RE = re.compile(
     r"\b(?:private\s+)?(?:val|var)\s+(?P<name>[A-Za-z_]\w*)\s*:\s*(?P<kind>MutableStateFlow|StateFlow)\s*<",
@@ -429,6 +435,12 @@ def _extract_frontend_routes(
         routes.extend(_extract_flutter_go_routes(file_fact, source))
     if normalized.endswith(".dart") and "Routerino" in source:
         routes.extend(_extract_flutter_routerino_routes(file_fact, source))
+    if normalized.endswith(".kt") and (
+        {"android", "jetpack-compose"} & frontend_frameworks
+        or "NavKey" in source
+        or "androidx.navigation" in source
+    ):
+        routes.extend(_extract_compose_navigation_routes(file_fact, source))
     if _should_extract_angular_routes(source, frontend_frameworks):
         routes.extend(_extract_angular_routes(file_fact, source))
     elif not is_tanstack_source and not is_redwood_source and _should_extract_vue_router_routes(source, frontend_frameworks):
@@ -729,6 +741,63 @@ def _extract_flutter_routerino_routes(file_fact: FileFact, source: str) -> list[
         seen.add(key)
         routes.append(_route(file_fact, route, "flutter", "flutter-routerino-screen", _line_for_offset(source, match.start())))
     return routes
+
+
+def _extract_compose_navigation_routes(file_fact: FileFact, source: str) -> list[FrontendRouteFact]:
+    routes: list[FrontendRouteFact] = []
+    seen: set[tuple[str, str]] = set()
+
+    for match in KOTLIN_NAV3_ENTRY_RE.finditer(source):
+        if _offset_is_js_inert(source, match.start()):
+            continue
+        route = _normalize_frontend_route(match.group("key"))
+        key = (route, "compose-navigation3-entry")
+        if key in seen:
+            continue
+        seen.add(key)
+        routes.append(
+            _route(
+                file_fact,
+                route,
+                "jetpack-compose",
+                "compose-navigation3-entry",
+                _line_for_offset(source, match.start()),
+            )
+        )
+
+    for match in KOTLIN_COMPOSE_NAV_CALL_RE.finditer(source):
+        if _offset_is_js_inert(source, match.start()):
+            continue
+        body = ""
+        if match.group("open") == "(":
+            open_index = source.find("(", match.start())
+            close_index = _find_matching_delimiter(source, open_index, "(", ")")
+            if close_index is None:
+                continue
+            body = source[open_index + 1 : close_index]
+        route_value = _compose_navigation_route_value(match.group("key"), body)
+        if not route_value:
+            continue
+        kind = "compose-navigation-graph" if match.group("callee") == "navigation" else "compose-navigation-route"
+        route = _normalize_frontend_route(route_value)
+        key = (route, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        routes.append(_route(file_fact, route, "jetpack-compose", kind, _line_for_offset(source, match.start())))
+    return routes
+
+
+def _compose_navigation_route_value(type_key: str | None, body: str) -> str | None:
+    if type_key:
+        return type_key
+    route_match = KOTLIN_NAV_ROUTE_ARG_RE.search(body)
+    if route_match:
+        return route_match.group("route")
+    first_arg = KOTLIN_NAV_FIRST_ARG_RE.search(body)
+    if first_arg:
+        return first_arg.group("route")
+    return None
 
 
 def _dart_page_factory_name(source: str) -> str | None:
