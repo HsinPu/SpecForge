@@ -71,6 +71,10 @@ ATTR_RE = re.compile(
     re.DOTALL,
 )
 INPUT_RE = re.compile(r"<(?:input|select|textarea)\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
+HEEX_INPUT_RE = re.compile(
+    r"<\.input\b(?P<attrs>(?:=>|->|[^>])*?)(?:/?>)",
+    re.IGNORECASE | re.DOTALL,
+)
 FETCH_RE = re.compile(r"(?<!\.)\bfetch\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`](?P<args>[^)]*)\)", re.DOTALL)
 AXIOS_RE = re.compile(
     r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`]",
@@ -360,7 +364,7 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
         method = attrs.get("method", "GET").upper() if "method" in attrs else ("LIVE_EVENT" if attrs.get("phx-submit") else None)
         if file_fact.language == "svelte":
             action = _sveltekit_form_action(file_fact.path, action, method)
-        form_end = source.find("</form>", match.end())
+        form_end = _form_body_end(source, match.end())
         body = source[match.end() : form_end if form_end >= 0 else match.end() + 1200]
         fields = _form_fields(body)
         if not action and not method and not fields:
@@ -380,6 +384,11 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
     if file_fact.language == "haml" or file_fact.path.lower().endswith(".haml"):
         forms.extend(_extract_haml_rails_helper_forms(file_fact, source))
     return forms
+
+
+def _form_body_end(source: str, start: int) -> int:
+    ends = [index for marker in ("</form>", "</.form>") if (index := source.find(marker, start)) >= 0]
+    return min(ends) if ends else -1
 
 
 def _extract_php_forms(file_fact: FileFact, source: str) -> list[FormFact]:
@@ -970,7 +979,25 @@ def _form_fields(source: str) -> list[str]:
         )
         if name:
             fields.append(name)
+    for match in HEEX_INPUT_RE.finditer(source):
+        attrs = _attrs(match.group("attrs"))
+        name = _clean_heex_form_field_name(attrs.get("field") or attrs.get("name") or attrs.get("id"))
+        if name:
+            fields.append(name)
     return _dedupe(fields)
+
+
+def _clean_heex_form_field_name(value: str | None) -> str | None:
+    cleaned = _clean_form_field_name(value)
+    if not cleaned:
+        return None
+    match = re.fullmatch(
+        r"(?:[A-Za-z_]\w*|@[A-Za-z_]\w*)\s*\[\s*:(?P<name>[A-Za-z_]\w*)\s*\]",
+        cleaned,
+    )
+    if match:
+        return match.group("name")
+    return cleaned.lstrip(":") or None
 
 
 def _clean_form_field_name(value: str | None) -> str | None:
