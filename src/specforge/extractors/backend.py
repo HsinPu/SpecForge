@@ -5815,6 +5815,7 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
         route_prefix = _join_paths(file_prefix, _laravel_prefix_for_offset(groups, match.start()))
         raw_path = match.group("path")
         handler = _laravel_handler_from_args(match.group("args"))
+        route_tail = _php_statement_tail(source, match.end())
         line = _line_for_offset(source, match.start())
         if raw_method.lower() in {"resource", "apiresource"}:
             routes.extend(
@@ -5824,7 +5825,7 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
                     route_prefix,
                     raw_path,
                     handler,
-                    match.group("args"),
+                    match.group("args") + route_tail,
                     api_only=raw_method.lower() == "apiresource",
                 )
             )
@@ -5859,10 +5860,7 @@ def _laravel_route_groups(source: str) -> list[tuple[int, int, str]]:
     groups: list[tuple[int, int, str]] = []
     for match in re.finditer(r"\bRoute::group\s*\(", source):
         open_index = source.find("(", match.start())
-        close_index = _find_matching_paren(source, open_index)
-        if close_index is None:
-            continue
-        brace_index = source.find("{", open_index, close_index)
+        brace_index = source.find("{", open_index, open_index + 500)
         if brace_index < 0:
             continue
         end = _find_matching_code_brace(source, brace_index)
@@ -5872,18 +5870,23 @@ def _laravel_route_groups(source: str) -> list[tuple[int, int, str]]:
         prefix = _laravel_prefix_from_group_head(head)
         if prefix:
             groups.append((brace_index, end, prefix))
-    for match in re.finditer(r"\bRoute::prefix\(\s*['\"](?P<prefix>[^'\"]+)['\"]\s*\)[\s\S]{0,300}?->group\s*\(", source):
-        open_index = source.find("(", source.rfind("group", match.start(), match.end()))
-        close_index = _find_matching_paren(source, open_index)
-        if close_index is None:
+    for match in re.finditer(r"->group\s*\(", source):
+        statement_start = source.rfind(";", 0, match.start()) + 1
+        route_start = source.find("Route::", statement_start, match.start())
+        if route_start < 0:
             continue
-        brace_index = source.find("{", open_index, close_index)
+        chain = source[route_start : match.end()]
+        prefix = _laravel_prefix_from_fluent_chain(chain)
+        if not prefix:
+            continue
+        open_index = match.end() - 1
+        brace_index = source.find("{", open_index, open_index + 500)
         if brace_index < 0:
             continue
         end = _find_matching_code_brace(source, brace_index)
         if end is not None:
-            groups.append((brace_index, end, match.group("prefix")))
-    return sorted(groups, key=lambda item: item[0])
+            groups.append((brace_index, end, prefix))
+    return sorted(set(groups), key=lambda item: item[0])
 
 
 def _laravel_prefix_from_group_head(source: str) -> str:
@@ -5891,6 +5894,13 @@ def _laravel_prefix_from_group_head(source: str) -> str:
     if match:
         return match.group("prefix")
     return ""
+
+
+def _laravel_prefix_from_fluent_chain(source: str) -> str:
+    prefix = ""
+    for match in re.finditer(r"(?:Route::|->)prefix\(\s*['\"](?P<prefix>[^'\"]+)['\"]\s*\)", source):
+        prefix = _join_paths(prefix, match.group("prefix"))
+    return prefix
 
 
 def _laravel_prefix_for_offset(groups: list[tuple[int, int, str]], offset: int) -> str:
@@ -5902,10 +5912,26 @@ def _laravel_prefix_for_offset(groups: list[tuple[int, int, str]], offset: int) 
 
 
 def _laravel_handler_from_args(args: str) -> str | None:
+    array_handler = re.search(
+        r"\[\s*(?P<class>[A-Za-z_\\][\w\\]*)::class\s*,\s*['\"](?P<method>[A-Za-z_]\w*)['\"]",
+        args,
+    )
+    if array_handler:
+        return f"{array_handler.group('class')}@{array_handler.group('method')}"
+    invokable = re.search(r"(?P<class>[A-Za-z_\\][\w\\]*)::class", args)
+    if invokable:
+        return invokable.group("class")
     return (
         _first_match(args, r"([A-Za-z_\\][\w\\]+@[A-Za-z_]\w*)")
         or _first_match(args, r"['\"]([A-Za-z_\\][\w\\]+)['\"]")
     )
+
+
+def _php_statement_tail(source: str, offset: int) -> str:
+    end = source.find(";", offset)
+    if end < 0:
+        return ""
+    return source[offset:end]
 
 
 def _laravel_match_methods(source: str) -> list[str]:
@@ -5975,6 +6001,12 @@ def _laravel_option_items(args: str, option: str) -> list[str]:
         args,
         re.IGNORECASE,
     )
+    if not match:
+        match = re.search(
+            rf"->{re.escape(option)}\s*\(\s*(?P<value>\[[\s\S]*?\]|array\s*\([\s\S]*?\)|['\"][^'\"]+['\"])",
+            args,
+            re.IGNORECASE,
+        )
     if not match:
         return []
     return re.findall(r"['\"]([A-Za-z_]\w*)['\"]", match.group("value"))
