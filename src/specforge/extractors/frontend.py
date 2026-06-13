@@ -189,6 +189,25 @@ STATE_PATTERNS = [
     ("ember", "tracked", re.compile(r"@\s*tracked\s+(?:declare\s+)?([A-Za-z_$][\w$]*)")),
     ("ember", "service", re.compile(r"@\s*service(?:\([^)]*\))?\s+(?:declare\s+)?([A-Za-z_$][\w$]*)")),
 ]
+FRONTEND_EXTRACTABLE_LANGUAGES = {
+    "typescript",
+    "javascript",
+    "astro",
+    "razor",
+    "dart",
+    "kotlin",
+    "swift",
+    "xaml",
+    "python",
+}
+STREAMLIT_SESSION_STATE_RE = re.compile(
+    r"\bst\.session_state\s*"
+    r"(?:\[\s*(?P<quote>['\"])(?P<bracket>[^'\"]+)(?P=quote)\s*\]"
+    r"|\.(?P<attr>[A-Za-z_]\w*))?"
+)
+STREAMLIT_SESSION_STATE_CONTAINS_RE = re.compile(
+    r"(?P<quote>['\"])(?P<key>[^'\"]+)(?P=quote)\s+(?:not\s+)?in\s+st\.session_state"
+)
 ANGULAR_COMPONENT_RE = re.compile(
     r"@Component\s*\(\s*{(?P<meta>.*?)}\s*\)\s*export\s+class\s+(?P<name>[A-Za-z_]\w*)",
     re.DOTALL,
@@ -338,7 +357,11 @@ def extract_frontend_facts(
             continue
         if not _is_frontend_candidate(normalized, frontend_frameworks, framework_names):
             continue
-        if file_fact.language in {"typescript", "javascript", "astro", "razor", "dart", "kotlin", "swift", "xaml"} or normalized.endswith((".vue", ".svelte", ".astro", ".cshtml", ".razor", ".xaml", ".axaml")) or ("ember" in frontend_frameworks and normalized.endswith((".hbs", ".gjs", ".gts"))):
+        if (
+            file_fact.language in FRONTEND_EXTRACTABLE_LANGUAGES
+            or normalized.endswith((".vue", ".svelte", ".astro", ".cshtml", ".razor", ".xaml", ".axaml"))
+            or ("ember" in frontend_frameworks and normalized.endswith((".hbs", ".gjs", ".gts")))
+        ):
             source = _read(root, file_fact)
             routes.extend(_extract_frontend_routes(file_fact, source, frontend_frameworks))
             components.extend(_extract_components(file_fact, source, symbols, frameworks))
@@ -1427,6 +1450,10 @@ def _extract_state_usages(file_fact: FileFact, source: str, frontend_frameworks:
         usages.extend(_extract_kotlin_state_usages(file_fact, source))
     if file_fact.language == "swift" or file_fact.path.lower().endswith(".swift"):
         usages.extend(_extract_swift_state_usages(file_fact, source))
+    if (file_fact.language == "python" or file_fact.path.lower().endswith(".py")) and (
+        "streamlit" in frontend_frameworks or _looks_like_streamlit_source(source)
+    ):
+        usages.extend(_extract_streamlit_state_usages(file_fact, source))
     if is_angular_state_source:
         usages.extend(_extract_angular_state_usages(file_fact, source))
     for library, usage, pattern in STATE_PATTERNS:
@@ -1461,6 +1488,44 @@ def _extract_state_usages(file_fact: FileFact, source: str, frontend_frameworks:
                 )
             )
     return _dedupe_state_usages(usages)
+
+
+def _extract_streamlit_state_usages(file_fact: FileFact, source: str) -> list[StateUsageFact]:
+    usages: list[StateUsageFact] = []
+    seen_names: set[str] = set()
+    generic_start: int | None = None
+
+    def append_usage(name: str, offset: int) -> None:
+        if name in seen_names:
+            return
+        seen_names.add(name)
+        usages.append(_state_usage(file_fact, source, offset, "streamlit", "session-state", name))
+
+    for match in STREAMLIT_SESSION_STATE_CONTAINS_RE.finditer(source):
+        append_usage(match.group("key"), match.start("key"))
+
+    for match in STREAMLIT_SESSION_STATE_RE.finditer(source):
+        name = match.group("bracket") or match.group("attr") or "session_state"
+        if name == "session_state":
+            generic_start = match.start() if generic_start is None else generic_start
+            continue
+        append_usage(name, match.start())
+    if not usages and generic_start is not None:
+        append_usage("session_state", generic_start)
+    return usages
+
+
+def _looks_like_streamlit_source(source: str) -> bool:
+    return bool(
+        re.search(r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bstreamlit\.", source)
+        or re.search(
+            r"\bst\."
+            r"(?:set_page_config|title|header|write|markdown|sidebar|session_state|"
+            r"text_input|button|chat_input)\b",
+            source,
+        )
+    )
 
 
 def _extract_angular_state_usages(file_fact: FileFact, source: str) -> list[StateUsageFact]:
@@ -2653,6 +2718,8 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
     if {"swiftui", "ios"} & frontend_frameworks and lower.endswith(".swift"):
         return True
     if {"maui", "wpf", "avalonia"} & frontend_frameworks and lower.endswith((".xaml", ".axaml")):
+        return True
+    if "streamlit" in frontend_frameworks and lower.endswith(".py"):
         return True
     if {"expo", "react-native", "react-navigation"} & frontend_frameworks and lower.endswith((".tsx", ".jsx", ".ts", ".js")):
         return True

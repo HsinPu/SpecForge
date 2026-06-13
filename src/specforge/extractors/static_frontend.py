@@ -43,6 +43,18 @@ COMPONENT_MARKUP_LANGUAGES = {"svelte"}
 TITLE_RE = re.compile(r"<title[^>]*>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
 FRONTMATTER_TITLE_RE = re.compile(r"^---\s*\n(?P<body>[\s\S]*?)\n---", re.MULTILINE)
 FRONTMATTER_TITLE_LINE_RE = re.compile(r"(?m)^\s*title\s*:\s*(?P<title>.+?)\s*$")
+STREAMLIT_PAGE_CONFIG_RE = re.compile(
+    r"\bst\.set_page_config\s*\((?P<body>[\s\S]{0,1000}?)\)",
+    re.IGNORECASE,
+)
+STREAMLIT_PAGE_TITLE_RE = re.compile(
+    r"\bpage_title\s*=\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+STREAMLIT_TITLE_RE = re.compile(
+    r"\bst\.(?:title|header)\s*\(\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
 TAG_RE = re.compile(r"<\.?(?P<tag>form|a|script|link|img|source)\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 FORM_TAG_RE = re.compile(r"<\.?form\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
 JSX_FORM_TAG_RE = re.compile(r"<(?P<tag>Form|fetcher\.Form)\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
@@ -138,6 +150,7 @@ def extract_static_frontend_facts(
     styles: list[StyleFact] = []
     routes: list[FrontendRouteFact] = []
     api_calls: list[ApiCallFact] = []
+    streamlit_main_paths = _streamlit_main_paths(root, files)
 
     for file_fact in files:
         if _is_astro_content_page_path(file_fact.path):
@@ -158,6 +171,21 @@ def extract_static_frontend_facts(
             continue
         if file_fact.role == "asset" and _is_frontend_static_asset_file(file_fact.path):
             assets.append(_extract_standalone_asset(file_fact))
+            continue
+        if file_fact.language == "python":
+            source = _read(root, file_fact)
+            if _looks_like_streamlit_source(source):
+                page = _extract_streamlit_page(file_fact, source, file_fact.path in streamlit_main_paths)
+                pages.append(page)
+                routes.append(
+                    FrontendRouteFact(
+                        route=page.route,
+                        path=file_fact.path,
+                        framework="streamlit",
+                        kind="streamlit-page-route",
+                        evidence=page.evidence,
+                    )
+                )
             continue
         if file_fact.language in PAGE_LANGUAGES:
             source = _read(root, file_fact)
@@ -333,6 +361,8 @@ def _allow_route_group_fallback(path: str) -> bool:
     name = Path(path.replace("\\", "/")).name.lower()
     if name in {"router.js", "router.ts"}:
         return False
+    if name.endswith(".py"):
+        return False
     return not name.endswith((".routes.ts", ".routes.js", ".routing.ts", ".routing.js"))
 
 
@@ -400,6 +430,118 @@ def _extract_sveltekit_page(file_fact: FileFact, source: str) -> PageFact:
 def _is_sveltekit_page_component(path: str) -> bool:
     normalized = path.replace("\\", "/").lower()
     return normalized.endswith("/+page.svelte") or normalized == "+page.svelte"
+
+
+def _extract_streamlit_page(file_fact: FileFact, source: str, is_main: bool) -> PageFact:
+    title, title_line = _streamlit_title(source)
+    evidence_line = title_line or _streamlit_signal_line(source)
+    return PageFact(
+        path=file_fact.path,
+        route=_streamlit_route(file_fact.path, is_main),
+        title=title,
+        kind="streamlit-page",
+        template_engine="streamlit",
+        evidence=Evidence(
+            file=file_fact.path,
+            kind="page",
+            line_start=evidence_line,
+            line_end=evidence_line,
+        ),
+    )
+
+
+def _streamlit_main_paths(root: Path, files: list[FileFact]) -> set[str]:
+    candidates: list[tuple[tuple[int, str], str]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        source = _read(root, file_fact)
+        if not _looks_like_streamlit_source(source):
+            continue
+        candidates.append((_streamlit_main_score(file_fact.path), file_fact.path))
+    if not candidates:
+        return set()
+    return {sorted(candidates, key=lambda item: item[0])[0][1]}
+
+
+def _streamlit_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    page_penalty = 20 if "/pages/" in f"/{lower}" or lower.startswith("pages/") else 0
+    cleaned_name = re.sub(r"^\d+[_\-\s]+", "", name)
+    priority = {
+        "streamlit_app.py": 0,
+        "app.py": 1,
+        "home.py": 2,
+        "homepage.py": 2,
+        "main.py": 3,
+    }.get(cleaned_name, 8)
+    return (page_penalty + priority + lower.count("/"), lower)
+
+
+def _looks_like_streamlit_source(source: str) -> bool:
+    return bool(
+        re.search(r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bstreamlit\.", source)
+        or re.search(
+            r"\bst\."
+            r"(?:set_page_config|title|header|write|markdown|sidebar|session_state|"
+            r"text_input|button|chat_input)\b",
+            source,
+        )
+    )
+
+
+def _streamlit_title(source: str) -> tuple[str | None, int | None]:
+    config_match = STREAMLIT_PAGE_CONFIG_RE.search(source)
+    if config_match:
+        title_match = STREAMLIT_PAGE_TITLE_RE.search(config_match.group("body"))
+        if title_match:
+            line = _line_for_offset(source, config_match.start() + title_match.start())
+            return _clean_streamlit_title(title_match.group("title")), line
+    title_match = STREAMLIT_TITLE_RE.search(source)
+    if title_match:
+        line = _line_for_offset(source, title_match.start())
+        return _clean_streamlit_title(title_match.group("title")), line
+    return None, None
+
+
+def _clean_streamlit_title(title: str) -> str:
+    return " ".join(title.split()).strip()
+
+
+def _streamlit_signal_line(source: str) -> int:
+    match = re.search(
+        r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)|"
+        r"\bst\.(?:set_page_config|title|header|write)\b|\bstreamlit\.",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _streamlit_route(path: str, is_main: bool) -> str:
+    if is_main:
+        return "/"
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    if lower.startswith("pages/"):
+        route_part = normalized[len("pages/") :]
+    elif "/pages/" in lower:
+        index = lower.index("/pages/") + len("/pages/")
+        route_part = normalized[index:]
+    else:
+        route_part = Path(normalized).name
+    stem = re.sub(r"\.py$", "", route_part, flags=re.IGNORECASE)
+    slug_parts = [_streamlit_slug_part(part) for part in stem.split("/")]
+    slug = "/".join(part for part in slug_parts if part)
+    return _ensure_route(slug or "page")
+
+
+def _streamlit_slug_part(value: str) -> str:
+    value = re.sub(r"^\d+[_\-\s]+", "", value)
+    return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-").lower()
 
 
 def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:

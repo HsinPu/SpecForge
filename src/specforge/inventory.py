@@ -1271,6 +1271,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
     result.extend(_redwood_entrypoints(root))
     result.extend(_swift_vapor_entrypoints(root))
     result.extend(_swiftui_app_entrypoints(root, files))
+    result.extend(_streamlit_entrypoints(root, files))
     result.extend(_django_entrypoints(root))
     result.extend(_symfony_entrypoints(root))
     result.extend(_laravel_entrypoints(root))
@@ -1383,6 +1384,7 @@ def collect_project_commands(root: Path, files: list[FileFact]) -> list[CommandF
     commands.extend(_swift_package_project_commands(root))
     commands.extend(_composer_script_commands(root))
     commands.extend(_wordpress_cli_commands(root, files))
+    commands.extend(_streamlit_project_commands(root, files))
     commands.extend(_django_project_commands(root))
     commands.extend(_symfony_project_commands(root))
     commands.extend(_rails_project_commands(root))
@@ -2308,6 +2310,114 @@ def _node_package_script_command(package_manager: str, package_dir: str, script_
     if package_manager == "yarn":
         return f"yarn --cwd {package_dir} run {script_name}"
     return f"npm --prefix {package_dir} run {script_name}"
+
+
+def _streamlit_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact]:
+    main_file = _streamlit_main_file(root, files)
+    if not main_file:
+        return []
+    source = _read_manifest_text(root / main_file.path)
+    line = _streamlit_signal_line(source)
+    return [
+        EntrypointFact(
+            path=main_file.path,
+            kind="streamlit-app",
+            command=f"streamlit run {main_file.path}",
+            evidence=Evidence(file=main_file.path, kind="entrypoint", line_start=line, line_end=line),
+        )
+    ]
+
+
+def _streamlit_project_commands(root: Path, files: list[FileFact]) -> list[CommandFact]:
+    main_file = _streamlit_main_file(root, files)
+    commands: list[CommandFact] = []
+    if main_file:
+        commands.append(
+            _command(
+                main_file.path,
+                f"streamlit run {main_file.path}",
+                "Run Streamlit app",
+                ["run", main_file.path],
+                [],
+            )
+        )
+    has_python_tests = any(file.language == "python" and file.role == "test" for file in files)
+    if main_file and (_project_uses_pytest(root) or has_python_tests):
+        commands.append(
+            _command(
+                _python_test_command_source(root, main_file.path),
+                "pytest",
+                "Run pytest suite",
+                [],
+                [],
+            )
+        )
+    return commands
+
+
+def _streamlit_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
+    candidates: list[tuple[tuple[int, str], FileFact]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        if not _looks_like_streamlit_file(root, file_fact):
+            continue
+        candidates.append((_streamlit_main_score(file_fact.path), file_fact))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def _streamlit_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    page_penalty = 20 if "/pages/" in f"/{lower}" or lower.startswith("pages/") else 0
+    cleaned_name = re.sub(r"^\d+[_\-\s]+", "", name)
+    priority = {
+        "streamlit_app.py": 0,
+        "app.py": 1,
+        "home.py": 2,
+        "homepage.py": 2,
+        "main.py": 3,
+    }.get(cleaned_name, 8)
+    depth_penalty = lower.count("/")
+    return (page_penalty + priority + depth_penalty, lower)
+
+
+def _looks_like_streamlit_file(root: Path, file_fact: FileFact) -> bool:
+    source = _read_manifest_text(root / file_fact.path)
+    return _looks_like_streamlit_source(source)
+
+
+def _looks_like_streamlit_source(source: str) -> bool:
+    return bool(
+        re.search(r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bstreamlit\.", source)
+        or re.search(
+            r"\bst\."
+            r"(?:set_page_config|title|header|write|markdown|sidebar|session_state|"
+            r"text_input|button|chat_input)\b",
+            source,
+        )
+    )
+
+
+def _streamlit_signal_line(source: str) -> int:
+    match = re.search(
+        r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)|"
+        r"\bst\.(?:set_page_config|title|header|write)\b|\bstreamlit\.",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _python_test_command_source(root: Path, fallback: str) -> str:
+    for path in ("pyproject.toml", "pytest.ini", "requirements-dev.txt", "requirements.txt", "setup.cfg"):
+        if (root / path).exists():
+            return path
+    return fallback
 
 
 def _django_entrypoints(root: Path) -> list[EntrypointFact]:
