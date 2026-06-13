@@ -429,10 +429,23 @@ SERVICE_SYMBOL_SUFFIXES = (
 
 GENERIC_SERVICE_SYMBOLS = {
     "BaseService",
+    "Client",
+    "Const",
+    "Converter",
+    "Factory",
+    "Formatter",
+    "Helper",
     "IService",
+    "Manager",
+    "Parser",
+    "Provider",
     "Service",
     "ServiceTest",
+    "Validator",
+    "Wrapper",
+    "const",
 }
+GENERIC_SERVICE_SYMBOL_NAMES = {item.lower() for item in GENERIC_SERVICE_SYMBOLS}
 
 GENERIC_REPOSITORY_SYMBOLS = {
     "IRepository",
@@ -540,7 +553,7 @@ def _service_facts_from_symbols(
     for symbol in symbols:
         if not _is_top_level_code_type(symbol) or _is_test_symbol(symbol):
             continue
-        if symbol.name in GENERIC_SERVICE_SYMBOLS:
+        if _is_generic_service_symbol(symbol.name):
             continue
         if not _looks_like_service_symbol(symbol):
             continue
@@ -597,6 +610,11 @@ def _looks_like_service_symbol(symbol: SymbolFact) -> bool:
         or "/services/" in f"/{normalized}"
         or "/service/" in f"/{normalized}"
     )
+
+
+def _is_generic_service_symbol(name: str) -> bool:
+    normalized = name.removeprefix("I")
+    return normalized.lower() in GENERIC_SERVICE_SYMBOL_NAMES
 
 
 def _repository_entity_name(name: str) -> str | None:

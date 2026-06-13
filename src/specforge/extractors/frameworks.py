@@ -1513,12 +1513,23 @@ def _looks_like_authjs_source(path: Path) -> bool:
 
 def _looks_like_nextauth_source(path: Path) -> bool:
     source = _read_text(path)
-    return "next-auth" in source or "NextAuth(" in source or "getServerSession" in source or "authOptions" in source
+    lower = source.lower()
+    return (
+        "next-auth" in lower
+        or re.search(r"\bnextauth\s*\(", source) is not None
+        or re.search(r"\bgetserversession\s*\(", lower) is not None
+    )
 
 
 def _looks_like_passport_source(path: Path) -> bool:
     source = _read_text(path)
-    return "passport" in source or "@nestjs/passport" in source or "AuthGuard(" in source
+    lower = source.lower()
+    return (
+        "@nestjs/passport" in lower
+        or re.search(r"\bfrom\s+['\"]passport(?:-[^'\"]*)?['\"]", lower) is not None
+        or re.search(r"\brequire\s*\(\s*['\"]passport(?:-[^'\"]*)?['\"]\s*\)", lower) is not None
+        or re.search(r"\bauthguard\s*\(", lower) is not None
+    )
 
 
 def _looks_like_jwt_source(path: Path) -> bool:
