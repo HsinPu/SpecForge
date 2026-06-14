@@ -144,6 +144,10 @@ API_SERVICE_METHOD_RE = re.compile(
     r"\.(?P<method>get|query|post|put|update|delete)\s*\(",
     re.IGNORECASE,
 )
+PRIVATE_API_WRAPPER_CALL_RE = re.compile(
+    r"\bthis\.\#(?P<method>get|query|post|put|update|delete|patch|del)\s*\(",
+    re.IGNORECASE,
+)
 API_PATH_WRAPPER_CALL_RE = re.compile(
     r"(?<!\.)\b(?P<client>(?:fetch|get|load|query|search|suggest|post|create|update|delete|remove)"
     r"[A-Za-z0-9_$]*)\s*\(",
@@ -1283,6 +1287,8 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
         )
     calls.extend(_extract_wordpress_api_fetch_calls(file_fact, source, endpoint_context))
     for match in LEGACY_API_METHOD_CALL_RE.finditer(source):
+        if _looks_like_private_method_call_context(source, match.start("method")):
+            continue
         if _looks_like_backend_route_registration_context(source, match.start()):
             continue
         calls.append(
@@ -1380,6 +1386,7 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     calls.extend(_extract_generated_api_client_calls(file_fact, source))
     calls.extend(_extract_api_path_wrapper_calls(file_fact, source, endpoint_context))
     calls.extend(_extract_api_service_wrapper_calls(file_fact, source, endpoint_context))
+    calls.extend(_extract_private_api_wrapper_calls(file_fact, source, endpoint_context))
     calls.extend(_extract_trpc_client_calls(file_fact, source))
     calls.extend(_extract_electron_ipc_client_calls(file_fact, source))
     calls.extend(_extract_tauri_invoke_calls(root, file_fact, source))
@@ -2615,6 +2622,98 @@ def _extract_api_service_wrapper_calls(
     return calls
 
 
+def _extract_private_api_wrapper_calls(
+    file_fact: FileFact,
+    source: str,
+    endpoint_context: dict[str, str] | None,
+) -> list[ApiCallFact]:
+    calls: list[ApiCallFact] = []
+    wrapper_prefixes = _private_api_wrapper_prefixes(source, endpoint_context)
+    for match in PRIVATE_API_WRAPPER_CALL_RE.finditer(source):
+        open_index = source.find("(", match.start())
+        close_index = _find_matching_delimiter(source, open_index, "(", ")")
+        if close_index is None:
+            continue
+        args = _split_js_call_args(source[open_index + 1 : close_index])
+        if not args:
+            continue
+        method = match.group("method").lower()
+        endpoints = _api_service_endpoint_variants(method, args, endpoint_context)
+        prefix = wrapper_prefixes.get(method)
+        if prefix:
+            endpoints = [_join_endpoint_segment(prefix, endpoint) for endpoint in endpoints]
+        for endpoint in endpoints:
+            calls.append(
+                ApiCallFact(
+                    path=file_fact.path,
+                    endpoint=endpoint,
+                    method=_api_service_http_method(method),
+                    client=f"this.#{method}",
+                    trigger="runtime",
+                    context="private-api-service-wrapper",
+                    evidence=Evidence(
+                        file=file_fact.path,
+                        kind="frontend-api-call",
+                        line_start=_line_for_offset(source, match.start()),
+                        line_end=_line_for_offset(source, close_index),
+                    ),
+                )
+            )
+    return calls
+
+
+def _private_api_wrapper_prefixes(source: str, endpoint_context: dict[str, str] | None) -> dict[str, str]:
+    prefixes: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?:^|[{\s;])(?:async\s+)?\#(?P<method>get|query|post|put|update|delete|patch|del)\s*\(",
+        source,
+        re.IGNORECASE,
+    ):
+        open_index = source.find("(", match.start())
+        close_index = _find_matching_delimiter(source, open_index, "(", ")")
+        if close_index is None:
+            continue
+        params = _split_js_call_args(source[open_index + 1 : close_index])
+        endpoint_param = params[0].split("=", 1)[0].strip() if params else ""
+        if not re.fullmatch(r"[A-Za-z_$][\w$]*", endpoint_param):
+            continue
+        body_open = source.find("{", close_index, min(len(source), close_index + 120))
+        if body_open == -1:
+            continue
+        body_close = _find_matching_delimiter(source, body_open, "{", "}")
+        if body_close is None:
+            continue
+        prefix = _private_api_wrapper_prefix_from_body(source[body_open + 1 : body_close], endpoint_param, endpoint_context)
+        if prefix:
+            prefixes[match.group("method").lower()] = prefix
+    return prefixes
+
+
+def _private_api_wrapper_prefix_from_body(
+    body: str,
+    endpoint_param: str,
+    endpoint_context: dict[str, str] | None,
+) -> str | None:
+    if endpoint_param not in body:
+        return None
+    context = endpoint_context or {}
+    for name, value in context.items():
+        if not value or name not in body:
+            continue
+        if not value.startswith(("/", "http://", "https://")):
+            continue
+        return _normalize_client_endpoint(value, context)
+
+    literal_match = re.search(
+        r"(?P<quote>['\"`])(?P<prefix>/[^'\"`$]*?)\$\{\s*" + re.escape(endpoint_param) + r"\s*\}(?P=quote)",
+        body,
+        re.DOTALL,
+    )
+    if literal_match:
+        return _normalize_client_endpoint(literal_match.group("prefix"), context)
+    return None
+
+
 def _api_service_http_method(method: str) -> str:
     return {
         "get": "GET",
@@ -2622,7 +2721,9 @@ def _api_service_http_method(method: str) -> str:
         "post": "POST",
         "put": "PUT",
         "update": "PUT",
+        "patch": "PATCH",
         "delete": "DELETE",
+        "del": "DELETE",
     }.get(method, method.upper())
 
 
@@ -3244,12 +3345,15 @@ def _api_client_endpoint_context(
     parent_match = re.search(r"\bclass\s+[A-Za-z_$][\w$]*\s+extends\s+(?P<parent>[A-Za-z_$][\w$]*)", source)
     parent_name = parent_match.group("parent") if parent_match else None
     if parent_name and parent_name not in {"ApiClient", "CacheEnabledApiClient"}:
+        local_context = _js_string_constants(source)
         imported_parent = _local_default_import_source(source, root, current_path, parent_name)
         if imported_parent:
             parent_path, parent_source = imported_parent
             if parent_path not in seen:
-                return _api_client_endpoint_context(parent_source, root, parent_path, {*seen, current_path})
-        return {}
+                parent_context = _api_client_endpoint_context(parent_source, root, parent_path, {*seen, current_path})
+                parent_context.update(local_context)
+                return parent_context
+        return local_context
     context = _direct_api_client_endpoint_context(source)
     context.update(_js_string_constants(source))
     return context
@@ -3296,6 +3400,20 @@ def _js_string_constants(source: str) -> dict[str, str]:
         re.DOTALL,
     ):
         constants[match.group("name")] = match.group("value")
+    for match in re.finditer(
+        r"\bget\s+(?P<private>\#)?(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*\)\s*\{\s*return\s*"
+        r"(?P<quote>['\"`])(?P<value>https?://[^'\"`]+|/[^'\"`]+)(?P=quote)\s*;?\s*\}",
+        source,
+        re.DOTALL,
+    ):
+        name = match.group("name")
+        value = match.group("value")
+        if match.group("private"):
+            constants[f"#{name}"] = value
+            constants[f"this.#{name}"] = value
+        else:
+            constants[name] = value
+            constants[f"this.{name}"] = value
     return constants
 
 
@@ -3357,6 +3475,8 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
             if value:
                 normalized = normalized.replace(needle, value)
     for name, value in context.items():
+        if re.fullmatch(r"(?:this\.)?\#?[A-Za-z_$][\w$]*", name):
+            normalized = re.sub(r"\$\{\s*" + re.escape(name) + r"\s*\}", value.rstrip("/"), normalized)
         if not re.fullmatch(r"[A-Za-z_$][\w$]*", name):
             continue
         normalized = re.sub(r"\$\{\s*" + re.escape(name) + r"\s*\}", value.rstrip("/"), normalized)
@@ -3421,6 +3541,10 @@ def _is_useful_api_endpoint(endpoint: str) -> bool:
 def _looks_like_function_declaration_context(source: str, offset: int) -> bool:
     prefix = source[max(0, offset - 32) : offset]
     return bool(re.search(r"\bfunction\s+$", prefix))
+
+
+def _looks_like_private_method_call_context(source: str, offset: int) -> bool:
+    return offset > 0 and source[offset - 1] == "#"
 
 
 def _looks_like_backend_route_registration_context(source: str, offset: int) -> bool:
