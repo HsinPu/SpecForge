@@ -362,6 +362,9 @@ RAILS_RESOURCES_RE = re.compile(r"^(?P<kind>resources?|resource)\s+:?(?P<name>[A
 RAILS_SYMBOL_ROUTE_RE = re.compile(r"^(?P<method>get|post|put|patch|delete)\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$", re.IGNORECASE)
 RAILS_DEVISE_TOKEN_AUTH_RE = re.compile(r"^mount_devise_token_auth_for\b(?P<args>.*)$", re.IGNORECASE)
 RAILS_DEVISE_FOR_RE = re.compile(r"^devise_for\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$", re.IGNORECASE)
+RAILS_WORDS_LOOP_RE = re.compile(
+    r"^%(?:w|i)\[(?P<values>[^\]]+)\]\.(?:each|each_with_index)\s+do\s+\|(?P<vars>[^|]+)\|"
+)
 PHOENIX_ROUTE_RE = re.compile(
     r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
     r"(?P<controller>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
@@ -7319,6 +7322,22 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
         base_collection = str(stack[-1]["collection"]) if stack else ""
         base_member = str(stack[-1]["member"]) if stack else ""
 
+        if words_loop := RAILS_WORDS_LOOP_RE.match(stripped):
+            variable_names = [part.strip() for part in words_loop.group("vars").split(",") if part.strip()]
+            loop_variable = variable_names[0] if variable_names else ""
+            values = [value for value in re.split(r"\s+", words_loop.group("values").strip()) if value]
+            if stripped.endswith("|") and loop_variable and values:
+                stack.append(
+                    {
+                        "indent": indent,
+                        "collection": base_collection,
+                        "member": base_member,
+                        "name": stack[-1]["name"] if stack else "",
+                        "vars": {loop_variable: values},
+                    }
+                )
+            continue
+
         if RAILS_SCOPE_MODULE_RE.match(stripped):
             continue
 
@@ -7405,16 +7424,17 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                 base = base_member or base_collection
             args = inline_block_route.group("args") or ""
             route_path = _join_paths(base, inline_block_route.group("path"))
-            routes.append(
-                _rails_route(
-                    file_fact,
-                    inline_block_route.group("method").upper(),
-                    route_path,
-                    _rails_route_handler(args, stack, inline_block_route.group("path")),
-                    "rails-route",
-                    line_number,
+            for route_path_variant in _rails_path_variants(route_path, stack):
+                routes.append(
+                    _rails_route(
+                        file_fact,
+                        inline_block_route.group("method").upper(),
+                        route_path_variant,
+                        _rails_route_handler(args, stack, inline_block_route.group("path")),
+                        "rails-route",
+                        line_number,
+                    )
                 )
-            )
             continue
 
         resource_statement = _rails_continued_statement(lines, index)
@@ -7435,6 +7455,7 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                     member_path,
                     args,
                     line_number,
+                    stack,
                 )
             )
             if re.search(r"\bdo\s*(?:#.*)?$", resource_statement):
@@ -7450,10 +7471,12 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                 base = base_member or base_collection
             route_path = _join_paths(base, symbol_route.group("name"))
             handler = _first_match(args, r"to:\s*['\"]([^'\"]+)['\"]") or _rails_stack_handler(stack, symbol_route.group("name"))
-            routes.append(_rails_route(file_fact, symbol_route.group("method").upper(), route_path, handler, "rails-route", line_number))
+            for route_path_variant in _rails_path_variants(route_path, stack):
+                routes.append(_rails_route(file_fact, symbol_route.group("method").upper(), route_path_variant, handler, "rails-route", line_number))
             continue
 
-        if quoted_route := RAILS_ROUTE_RE.match(stripped):
+        route_statement = _rails_continued_statement(lines, index)
+        if quoted_route := RAILS_ROUTE_RE.match(route_statement):
             args = quoted_route.group("args") or ""
             route_scope = str(stack[-1].get("route_scope", "")) if stack else ""
             if "on: :collection" in args or route_scope == "collection":
@@ -7461,16 +7484,17 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             else:
                 base = base_member or base_collection
             route_path = _join_paths(base, quoted_route.group("path"))
-            routes.append(
-                _rails_route(
-                    file_fact,
-                    quoted_route.group("method").upper(),
-                    route_path,
-                    _rails_route_handler(args, stack, quoted_route.group("path")),
-                    "rails-route",
-                    line_number,
+            for route_path_variant in _rails_path_variants(route_path, stack):
+                routes.append(
+                    _rails_route(
+                        file_fact,
+                        quoted_route.group("method").upper(),
+                        route_path_variant,
+                        _rails_route_handler(args, stack, quoted_route.group("path")),
+                        "rails-route",
+                        line_number,
+                    )
                 )
-            )
     return _dedupe_routes(routes)
 
 
@@ -7482,22 +7506,66 @@ def _rails_resource_routes(
     member_path: str,
     args: str,
     line: int,
+    stack: list[dict[str, object]] | None = None,
 ) -> list[ApiRouteFact]:
     routes: list[ApiRouteFact] = []
     for action in _rails_resource_actions(args, is_singular):
         for method, path, kind in _rails_resource_action_routes(action, collection_path, member_path, is_singular):
-            routes.append(
-                _rails_route(
-                    file_fact,
-                    method,
-                    path,
-                    f"{_rails_resource_controller(name, args)}#{action}",
-                    kind,
-                    line,
-                    request_body="params" if method in {"POST", "PUT", "PATCH"} else None,
+            for route_path_variant in _rails_path_variants(path, stack or []):
+                routes.append(
+                    _rails_route(
+                        file_fact,
+                        method,
+                        route_path_variant,
+                        f"{_rails_resource_controller(name, args)}#{action}",
+                        kind,
+                        line,
+                        request_body="params" if method in {"POST", "PUT", "PATCH"} else None,
+                    )
                 )
-            )
     return routes
+
+
+def _rails_path_variants(path: str, stack: list[dict[str, object]]) -> list[str]:
+    variables = _rails_stack_variables(stack)
+    variants = [path]
+    for name, values in variables.items():
+        next_variants: list[str] = []
+        for candidate in variants:
+            interpolation = f"#{{{name}}}"
+            if interpolation in candidate:
+                next_variants.extend(candidate.replace(interpolation, value) for value in values)
+                continue
+            if _rails_has_bare_path_segment(candidate, name):
+                next_variants.extend(_rails_replace_bare_path_segment(candidate, name, value) for value in values)
+                continue
+            next_variants.append(candidate)
+        variants = _dedupe(next_variants)
+    return _dedupe(variants)
+
+
+def _rails_stack_variables(stack: list[dict[str, object]]) -> dict[str, list[str]]:
+    variables: dict[str, list[str]] = {}
+    for entry in stack:
+        raw_vars = entry.get("vars")
+        if not isinstance(raw_vars, dict):
+            continue
+        for name, values in raw_vars.items():
+            if not isinstance(name, str):
+                continue
+            if isinstance(values, list):
+                variables[name] = [str(value) for value in values if str(value)]
+            elif isinstance(values, tuple):
+                variables[name] = [str(value) for value in values if str(value)]
+    return variables
+
+
+def _rails_has_bare_path_segment(path: str, name: str) -> bool:
+    return any(segment == name for segment in path.split("/"))
+
+
+def _rails_replace_bare_path_segment(path: str, name: str, value: str) -> str:
+    return "/".join(value if segment == name else segment for segment in path.split("/"))
 
 
 def _rails_resource_actions(args: str, is_singular: bool) -> list[str]:
@@ -7604,16 +7672,16 @@ def _rails_devise_path_name(statement: str, name: str, default: str) -> str:
 
 
 def _rails_option_value(source: str, name: str) -> str | None:
-    match = re.search(rf"\b{re.escape(name)}:\s*(?::(?P<symbol>[A-Za-z_]\w*)|['\"](?P<string>[^'\"]+)['\"])", source)
+    match = re.search(rf"\b{re.escape(name)}:\s*(?::(?P<symbol>[A-Za-z_]\w*)|['\"](?P<string>[^'\"]+)['\"]|(?P<bare>[A-Za-z_]\w*))", source)
     if not match:
         return None
-    return match.group("symbol") or match.group("string")
+    return match.group("symbol") or match.group("string") or match.group("bare")
 
 
 def _rails_continued_statement(lines: list[str], index: int) -> str:
     chunks = [lines[index].strip()]
     depth = _rails_delimiter_depth(chunks[0])
-    needs_more = chunks[0].endswith(",") or depth > 0
+    needs_more = chunks[0].endswith(",") or chunks[0].endswith("=>") or depth > 0
     for raw_line in lines[index + 1 : index + 6]:
         if not needs_more:
             break
@@ -7622,7 +7690,7 @@ def _rails_continued_statement(lines: list[str], index: int) -> str:
             break
         chunks.append(stripped)
         depth += _rails_delimiter_depth(stripped)
-        needs_more = stripped.endswith(",") or depth > 0
+        needs_more = stripped.endswith(",") or stripped.endswith("=>") or depth > 0
     return " ".join(chunks)
 
 
