@@ -334,6 +334,14 @@ RAILS_ROUTE_RE = re.compile(
     r"^\s*(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]*)['\"](?P<args>.*)$",
     re.IGNORECASE | re.MULTILINE,
 )
+RAILS_HASH_ROUTE_RE = re.compile(
+    r"^\s*(?P<method>get|post|put|patch|delete)\s*\(\s*\{(?P<body>.*)\}\s*(?:\.merge|\)|,)",
+    re.IGNORECASE | re.DOTALL,
+)
+RAILS_HASH_ROUTE_ENTRY_RE = re.compile(
+    r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)\s*=>\s*['\"](?P<handler>[^'\"]+)['\"]",
+    re.DOTALL,
+)
 SINATRA_ROUTE_RE = re.compile(
     r"(?m)^\s*(?P<method>get|post|put|patch|delete|options|head)\s+['\"](?P<path>[^'\"]+)['\"](?P<args>[^\n]*)"
 )
@@ -7565,6 +7573,27 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             continue
 
         route_statement = _rails_continued_statement(lines, index)
+        if hash_route := RAILS_HASH_ROUTE_RE.match(route_statement):
+            route_scope = str(stack[-1].get("route_scope", "")) if stack else ""
+            if route_scope == "collection":
+                base = base_collection
+            else:
+                base = base_member or base_collection
+            for path, handler in _rails_hash_route_entries(hash_route.group("body")):
+                route_path = _join_paths(base, path)
+                for route_path_variant in _rails_path_variants(route_path, stack):
+                    routes.append(
+                        _rails_route(
+                            file_fact,
+                            hash_route.group("method").upper(),
+                            route_path_variant,
+                            handler,
+                            "rails-route",
+                            line_number,
+                        )
+                    )
+            continue
+
         if quoted_route := RAILS_ROUTE_RE.match(route_statement):
             args = quoted_route.group("args") or ""
             route_scope = str(stack[-1].get("route_scope", "")) if stack else ""
@@ -7643,6 +7672,10 @@ def _rails_resource_routes(
                     )
                 )
     return routes
+
+
+def _rails_hash_route_entries(body: str) -> list[tuple[str, str]]:
+    return [(match.group("path"), match.group("handler")) for match in RAILS_HASH_ROUTE_ENTRY_RE.finditer(body)]
 
 
 def _rails_path_variants(path: str, stack: list[dict[str, object]]) -> list[str]:

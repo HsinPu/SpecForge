@@ -198,6 +198,10 @@ def _best_match(
     if static_choice_param_matches:
         return _best_method_match(call, static_choice_param_matches, "static-choice-param")
 
+    static_page_html_matches = _static_page_html_route_matches(call, routes, endpoint)
+    if static_page_html_matches:
+        return _best_method_match(call, static_page_html_matches, "static-page-family")
+
     trpc_matches = _trpc_procedure_matches(call, endpoint, routes)
     if trpc_matches:
         return _best_method_match(call, trpc_matches, "trpc-procedure")
@@ -220,6 +224,7 @@ def _best_method_match(
                 match_type.startswith("rails-anchored-param")
                 or match_type.startswith("rails-resource-text-id-param")
                 or match_type == "static-choice-param"
+                or match_type == "static-page-family"
             ):
                 confidence = "low"
             else:
@@ -510,6 +515,23 @@ def _static_choice_param_route_matches(routes: list[ApiRouteFact], endpoint: str
         if len(alternative_values) < 2:
             continue
         matches.extend(route for route, _ in candidates)
+    return sorted(_dedupe_routes(matches), key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _static_page_html_route_matches(call: ApiCallFact, routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
+    if (call.method or "").upper() != "GET":
+        return []
+    if "static" not in call.path.lower():
+        return []
+    if not re.fullmatch(r"/:[A-Za-z_][\w-]*\.html", endpoint):
+        return []
+    matches = [
+        route
+        for route in routes
+        if route.method.upper() == "GET"
+        and (route.handler or "").lower() == "static#show"
+        and _static_choice_route_part_is_safe(_normalize_path(route.path).strip("/"))
+    ]
     return sorted(_dedupe_routes(matches), key=lambda route: _route_match_specificity(route.path), reverse=True)
 
 
