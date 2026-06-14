@@ -3734,6 +3734,8 @@ def _page_surface_framework(page: object) -> str:
     if engine:
         return str(engine)
     kind = str(getattr(page, "kind", "") or "")
+    if kind == "static-page":
+        return "static-site"
     if kind.endswith("-page"):
         return kind[: -len("-page")] or "static-site"
     if kind.endswith("-app"):
