@@ -7400,9 +7400,11 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                 )
             continue
 
-        if scope_module_path_match := RAILS_SCOPE_MODULE_PATH_RE.match(stripped):
+        scope_statement = _rails_continued_statement(lines, index) if stripped.startswith("scope ") else stripped
+
+        if scope_module_path_match := RAILS_SCOPE_MODULE_PATH_RE.match(scope_statement):
             path = _join_paths(base_member or base_collection, scope_module_path_match.group("path"))
-            if stripped.endswith("do"):
+            if _rails_statement_opens_block(scope_statement):
                 stack.append(
                     {
                         "indent": indent,
@@ -7416,15 +7418,15 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
         if RAILS_SCOPE_MODULE_RE.match(stripped):
             continue
 
-        if scope_path_match := RAILS_SCOPE_PATH_RE.match(stripped):
+        if scope_path_match := RAILS_SCOPE_PATH_RE.match(scope_statement):
             path = _join_paths(base_member or base_collection, scope_path_match.group("path"))
-            if stripped.endswith("do"):
+            if _rails_statement_opens_block(scope_statement):
                 stack.append({"indent": indent, "collection": path, "member": path, "name": scope_path_match.group("path")})
             continue
 
-        if quoted_scope_match := RAILS_QUOTED_SCOPE_RE.match(stripped):
+        if quoted_scope_match := RAILS_QUOTED_SCOPE_RE.match(scope_statement):
             path = _join_paths(base_member or base_collection, quoted_scope_match.group("path"))
-            if stripped.endswith("do"):
+            if _rails_statement_opens_block(scope_statement):
                 stack.append({"indent": indent, "collection": path, "member": path, "name": quoted_scope_match.group("path")})
             continue
 
@@ -7799,6 +7801,10 @@ def _rails_continued_statement(lines: list[str], index: int) -> str:
         depth += _rails_delimiter_depth(stripped)
         needs_more = stripped.endswith(",") or stripped.endswith("=>") or depth > 0
     return " ".join(chunks)
+
+
+def _rails_statement_opens_block(statement: str) -> bool:
+    return re.search(r"\bdo\s*(?:#.*)?$", statement) is not None
 
 
 def _rails_delimiter_depth(source: str) -> int:
