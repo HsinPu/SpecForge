@@ -409,9 +409,12 @@ def _trpc_procedure_matches(
 
 
 def _route_matches(route_path: str, endpoint: str) -> bool:
+    route_variants = _route_path_variants(route_path)
+    endpoint_variants = _endpoint_path_variants(endpoint) if len(route_variants) > 1 else [_normalize_path(endpoint)]
     return any(
         _route_variant_matches(route_variant, endpoint)
-        for route_variant in _route_path_variants(route_path)
+        for route_variant in route_variants
+        for endpoint in endpoint_variants
     )
 
 
@@ -437,9 +440,12 @@ def _route_variant_matches(route_path: str, endpoint: str) -> bool:
 
 
 def _route_has_static_overlap(route_path: str, endpoint: str) -> bool:
+    route_variants = _route_path_variants(route_path)
+    endpoint_variants = _endpoint_path_variants(endpoint) if len(route_variants) > 1 else [_normalize_path(endpoint)]
     return any(
         _route_variant_has_static_overlap(route_variant, endpoint)
-        for route_variant in _route_path_variants(route_path)
+        for route_variant in route_variants
+        for endpoint in endpoint_variants
     )
 
 
@@ -691,6 +697,24 @@ def _route_path_variants(path: str) -> list[str]:
         if not changed:
             break
     return variants
+
+
+def _endpoint_path_variants(path: str) -> list[str]:
+    normalized = _normalize_path(path)
+    parts = normalized.strip("/").split("/") if normalized.strip("/") else []
+    variants: list[list[str]] = [[]]
+    for part in parts:
+        params = _adjacent_endpoint_params(part)
+        choices = [params[:index] for index in range(1, len(params) + 1)] if len(params) > 1 else [[part]]
+        variants = [prefix + choice for prefix in variants for choice in choices]
+    if not parts:
+        return [normalized]
+    return list(dict.fromkeys(_normalize_path("/".join(parts_variant)) for parts_variant in variants))
+
+
+def _adjacent_endpoint_params(part: str) -> list[str]:
+    params = re.findall(r":[A-Za-z_][\w-]*", part)
+    return params if params and "".join(params) == part else []
 
 
 def _is_route_param(part: str) -> bool:
