@@ -69,8 +69,18 @@ OBJECT_CLIENT_CALL_RE = re.compile(
     r"\s*\(\s*\{(?P<body>[\s\S]{0,1800}?)\}\s*\)",
     re.IGNORECASE,
 )
+OBJECT_METHOD_CLIENT_CALL_RE = re.compile(
+    r"\b(?P<client>[A-Za-z_$][\w$]*(?:api|Api|API|client|Client|http|Http|request|Request|service|Service)|axios)"
+    r"\.(?P<method>get|post|put|delete|patch|request|postForm)\s*\(",
+    re.IGNORECASE,
+)
 OBJECT_METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"`](?P<method>get|post|put|delete|patch|options|head)['\"`]", re.IGNORECASE)
 OBJECT_URL_RE = re.compile(r"\b(?:url|path|endpoint)\s*:\s*(?P<quote>['\"`])(?P<endpoint>/.*?)(?P=quote)", re.DOTALL)
+OBJECT_ENDPOINT_VALUE_RE = re.compile(
+    r"\b(?:url|path|endpoint)\s*:\s*"
+    r"(?P<value>`(?:\\.|[^`])*`|'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"|[A-Za-z_$][\w$]*)",
+    re.DOTALL,
+)
 WORDPRESS_API_FETCH_RE = re.compile(r"\b(?P<client>(?:window\.wp\.)?apiFetch)\s*\(\s*\{(?P<body>[\s\S]{0,1600}?)\}\s*\)", re.IGNORECASE)
 WORDPRESS_API_FETCH_PATH_RE = re.compile(
     r"\bpath\s*:\s*(?:(?P<quote>['\"`])(?P<endpoint>[^'\"`]+)(?P=quote)|(?P<variable>[A-Za-z_$][\w$]*))",
@@ -1215,6 +1225,7 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
                 ),
             )
         )
+    calls.extend(_extract_object_method_client_calls(file_fact, source, endpoint_context))
     for match in OBJECT_CLIENT_CALL_RE.finditer(source):
         body = match.group("body")
         method_match = OBJECT_METHOD_RE.search(body)
@@ -1416,6 +1427,87 @@ def _extract_csharp_http_api_calls(file_fact: FileFact, source: str) -> list[Api
             )
         )
     return calls
+
+
+def _extract_object_method_client_calls(
+    file_fact: FileFact,
+    source: str,
+    endpoint_context: dict[str, str],
+) -> list[ApiCallFact]:
+    calls: list[ApiCallFact] = []
+    for match in OBJECT_METHOD_CLIENT_CALL_RE.finditer(source):
+        if _looks_like_backend_route_registration_context(source, match.start("method")):
+            continue
+        open_index = match.end() - 1
+        close_index = _find_matching_delimiter(source, open_index, "(", ")")
+        if close_index is None:
+            continue
+        args = _split_js_call_args(source[open_index + 1 : close_index])
+        endpoint: str | None = None
+        method_name = match.group("method")
+        method = _object_method_client_http_method(method_name, "")
+
+        if method_name.lower() == "postform" and args:
+            endpoint = _object_method_first_arg_endpoint(args[0], endpoint_context)
+        elif args and args[0].lstrip().startswith("{"):
+            body = args[0].strip()[1:-1]
+            endpoint = _object_endpoint_from_body(body, endpoint_context)
+            method = _object_method_client_http_method(method_name, body)
+
+        if not endpoint:
+            continue
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=endpoint,
+                method=method,
+                client=match.group("client"),
+                trigger="runtime",
+                context="object-method-client",
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, close_index),
+                ),
+            )
+        )
+    return calls
+
+
+def _object_method_first_arg_endpoint(expression: str, context: dict[str, str]) -> str | None:
+    value = expression.strip()
+    literal = _js_string_literal_value(value)
+    if literal is not None:
+        return _normalize_client_endpoint(literal, context)
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", value):
+        endpoint = context.get(value)
+        return _normalize_dynamic_endpoint(endpoint, context) if endpoint else f"dynamic:{value}"
+    return _endpoint_from_js_endpoint_expression(value, context)
+
+
+def _object_method_client_http_method(method_name: str, body: str) -> str:
+    lowered = method_name.lower()
+    if lowered == "postform":
+        return "POST"
+    if lowered == "request":
+        method_match = OBJECT_METHOD_RE.search(body)
+        return method_match.group("method").upper() if method_match else "GET"
+    return _http_method_from_client_method(method_name)
+
+
+def _object_endpoint_from_body(body: str, context: dict[str, str]) -> str | None:
+    match = OBJECT_ENDPOINT_VALUE_RE.search(body)
+    if not match:
+        return None
+    value = match.group("value").strip()
+    literal = _js_string_literal_value(value)
+    if literal is not None:
+        return _normalize_dynamic_endpoint(literal, context)
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", value):
+        endpoint = context.get(value)
+        return _normalize_dynamic_endpoint(endpoint, context) if endpoint else f"dynamic:{value}"
+    return None
 
 
 def _csharp_http_method(method: str) -> str:
@@ -3083,6 +3175,12 @@ def _js_string_constants(source: str) -> dict[str, str]:
         source,
     ):
         constants[match.group("name")] = match.group("value")
+    for match in re.finditer(
+        r"\b(?:const|let|var|final)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*`(?P<value>https?://[^`]+|/[^`]*)`",
+        source,
+        re.DOTALL,
+    ):
+        constants[match.group("name")] = match.group("value")
     return constants
 
 
@@ -3143,14 +3241,15 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
         for needle, value in replacements.items():
             if value:
                 normalized = normalized.replace(needle, value)
-        for name, value in context.items():
-            if not re.fullmatch(r"[A-Za-z_$][\w$]*", name):
-                continue
-            normalized = re.sub(r"\$\{\s*" + re.escape(name) + r"\s*\}", value.rstrip("/"), normalized)
+    for name, value in context.items():
+        if not re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+            continue
+        normalized = re.sub(r"\$\{\s*" + re.escape(name) + r"\s*\}", value.rstrip("/"), normalized)
     normalized = normalized.replace("\r", "").replace("\n", "")
     normalized = re.sub(r"\s+", "", normalized)
-    if "?" in normalized:
-        normalized = normalized.split("?", 1)[0]
+    variable_with_optional_query = re.fullmatch(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}(?:\?.*)?", normalized)
+    if variable_with_optional_query:
+        return f"dynamic:{variable_with_optional_query.group(1)}"
     variable_only = re.fullmatch(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}", normalized)
     if variable_only:
         return f"dynamic:{variable_only.group(1)}"
@@ -3159,10 +3258,13 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
     normalized = re.sub(r"\$\{\s*route\.params\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*params\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*this\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
+    normalized = re.sub(r"\$\{\s*[A-Za-z_$][\w$]*\?\.\s*([A-Za-z_$][\w$]*)[^}]*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{[^}]+\}", ":param", normalized)
     normalized = re.sub(r"\$([A-Za-z_]\w*)", r":\1", normalized)
+    if "?" in normalized:
+        normalized = normalized.split("?", 1)[0]
     normalized = re.sub(r"(?<!/):[A-Za-z_$][\w$]*$", "", normalized)
     return normalized
 
