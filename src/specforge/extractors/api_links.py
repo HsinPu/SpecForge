@@ -269,6 +269,13 @@ def _trpc_procedure_matches(
 
 
 def _route_matches(route_path: str, endpoint: str) -> bool:
+    return any(
+        _route_variant_matches(route_variant, endpoint)
+        for route_variant in _route_path_variants(route_path)
+    )
+
+
+def _route_variant_matches(route_path: str, endpoint: str) -> bool:
     route = _normalize_path(route_path)
     endpoint = _normalize_path(endpoint)
     route_parts = route.strip("/").split("/") if route.strip("/") else []
@@ -290,6 +297,13 @@ def _route_matches(route_path: str, endpoint: str) -> bool:
 
 
 def _route_has_static_overlap(route_path: str, endpoint: str) -> bool:
+    return any(
+        _route_variant_has_static_overlap(route_variant, endpoint)
+        for route_variant in _route_path_variants(route_path)
+    )
+
+
+def _route_variant_has_static_overlap(route_path: str, endpoint: str) -> bool:
     route = _normalize_path(route_path)
     endpoint = _normalize_path(endpoint)
     route_parts = route.strip("/").split("/") if route.strip("/") else []
@@ -391,12 +405,41 @@ def _param_match_has_signal(route_path: str, endpoint: str) -> bool:
 
 
 def _route_match_specificity(path: str) -> tuple[int, int, int]:
+    return max(
+        (_route_variant_match_specificity(variant) for variant in _route_path_variants(path)),
+        default=(0, 0, 0),
+    )
+
+
+def _route_variant_match_specificity(path: str) -> tuple[int, int, int]:
     route = _normalize_path(path)
     parts = route.strip("/").split("/") if route.strip("/") else []
     static_count = sum(1 for part in parts if not _is_route_param(part) and part != "*")
     param_count = sum(1 for part in parts if _is_route_param(part))
     wildcard_count = sum(1 for part in parts if part == "*")
     return static_count, -wildcard_count, -param_count
+
+
+def _route_path_variants(path: str) -> list[str]:
+    normalized = _normalize_path(path)
+    if "(" not in normalized:
+        return [normalized]
+    variants = [normalized]
+    for _ in range(4):
+        expanded: list[str] = []
+        changed = False
+        for variant in variants:
+            match = re.search(r"\((?P<segment>/[^()]*)\)", variant)
+            if not match:
+                expanded.append(variant)
+                continue
+            changed = True
+            expanded.append(f"{variant[:match.start()]}{variant[match.end():]}")
+            expanded.append(f"{variant[:match.start()]}{match.group('segment')}{variant[match.end():]}")
+        variants = list(dict.fromkeys(_normalize_path(variant) for variant in expanded))
+        if not changed:
+            break
+    return variants
 
 
 def _is_route_param(part: str) -> bool:
