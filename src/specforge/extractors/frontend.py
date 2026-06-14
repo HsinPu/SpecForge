@@ -3701,12 +3701,12 @@ def build_frontend_surfaces(
     frontend_frameworks = {item.name for item in frameworks if item.category in {"frontend", "mobile"}}
     frontend_frameworks.update(route.framework for route in routes)
     frontend_frameworks.update(component.framework for component in components)
-    if pages:
-        frontend_frameworks.add("static-site")
+    frontend_frameworks.update(_page_surface_framework(page) for page in pages)
     surfaces: list[FrontendSurfaceFact] = []
     for framework in sorted(frontend_frameworks):
         framework_routes = [route for route in routes if route.framework == framework]
         framework_components = [component for component in components if component.framework == framework]
+        framework_pages = [page for page in pages if _page_surface_framework(page) == framework]
         is_static = framework in {"static-site", "html", "thymeleaf", "freemarker", "handlebars", "mustache", "ejs", "pug", "jsp"}
         surfaces.append(
             FrontendSurfaceFact(
@@ -3714,7 +3714,7 @@ def build_frontend_surfaces(
                 route_count=len(framework_routes),
                 component_count=len(framework_components),
                 api_call_count=len(api_calls),
-                page_count=len(pages) if is_static else 0,
+                page_count=len(framework_pages),
                 form_count=len(forms) if is_static else 0,
                 style_count=len(styles) if is_static or framework in {"sass", "tailwind", "bootstrap"} else 0,
                 asset_count=len(assets) if is_static else 0,
@@ -3722,11 +3722,23 @@ def build_frontend_surfaces(
                 evidence=[
                     *[route.evidence for route in framework_routes[:5]],
                     *[component.evidence for component in framework_components[:5]],
-                    *[getattr(page, "evidence") for page in pages[:5] if is_static],
+                    *[getattr(page, "evidence") for page in framework_pages[:5]],
                 ],
             )
         )
     return surfaces
+
+
+def _page_surface_framework(page: object) -> str:
+    engine = getattr(page, "template_engine", None)
+    if engine:
+        return str(engine)
+    kind = str(getattr(page, "kind", "") or "")
+    if kind.endswith("-page"):
+        return kind[: -len("-page")] or "static-site"
+    if kind.endswith("-app"):
+        return kind[: -len("-app")] or "static-site"
+    return "static-site"
 
 
 def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_names: set[str] | None = None) -> bool:
