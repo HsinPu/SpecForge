@@ -44,7 +44,7 @@ end
             facts = scan_project(root)
 
             forms = {(form.action, form.method, tuple(form.fields)) for form in facts.forms}
-            self.assertIn(("/login", None, ("email", "password", "return_to")), forms)
+            self.assertIn(("/login", "POST", ("email", "password", "return_to")), forms)
             self.assertIn(("/mfa", "POST", ("totp_code",)), forms)
 
 

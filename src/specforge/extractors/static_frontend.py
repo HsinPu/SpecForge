@@ -1022,7 +1022,12 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
         action = _normalize_template_action(action)
         if not action and attrs.get("phx-submit"):
             action = f"phx-submit:{attrs['phx-submit']}"
-        method = attrs.get("method", "GET").upper() if "method" in attrs else ("LIVE_EVENT" if attrs.get("phx-submit") else None)
+        is_heex_form_component = source[match.start() : match.start() + 6].lower().startswith("<.form")
+        method = (
+            attrs.get("method", "GET").upper()
+            if "method" in attrs
+            else ("LIVE_EVENT" if attrs.get("phx-submit") else ("POST" if is_heex_form_component else None))
+        )
         if file_fact.language == "svelte":
             action = _sveltekit_form_action(file_fact.path, action, method)
         form_end = _form_body_end(source, match.end())
@@ -1112,7 +1117,7 @@ def _form_submission_endpoint(form: FormFact) -> str | None:
         return None
     if _is_non_http_form_action(endpoint):
         return None
-    if _is_template_endpoint_fragment(endpoint):
+    if _is_template_endpoint_fragment(endpoint) or _is_dynamic_template_form_action(endpoint):
         return "dynamic:form-action"
     if (form.method or "").upper() == "LIVE_EVENT":
         return None
@@ -1122,6 +1127,18 @@ def _form_submission_endpoint(form: FormFact) -> str | None:
 def _is_non_http_form_action(endpoint: str) -> bool:
     lower = endpoint.lower()
     return endpoint.startswith("#") or lower.startswith(("javascript:", "mailto:", "tel:", "data:"))
+
+
+def _is_dynamic_template_form_action(endpoint: str) -> bool:
+    if endpoint.startswith("phoenix-helper:"):
+        return False
+    return (
+        endpoint.startswith("@")
+        or "#{" in endpoint
+        or "Routes." in endpoint
+        or "&&" in endpoint
+        or "||" in endpoint
+    )
 
 
 def _php_form_fields(source: str) -> list[str]:
@@ -1813,6 +1830,9 @@ def _normalize_template_action(action: str | None) -> str | None:
     if not action:
         return action
     cleaned = " ".join(action.strip().split())
+    phoenix_helper = _phoenix_route_helper_action(cleaned)
+    if phoenix_helper:
+        return phoenix_helper
     thymeleaf_match = re.fullmatch(r"@\{\s*(?P<path>[^}]+?)\s*\}", cleaned)
     if thymeleaf_match:
         path = thymeleaf_match.group("path").split("(", 1)[0].strip()
@@ -1830,6 +1850,20 @@ def _normalize_template_action(action: str | None) -> str | None:
     if re.search(r"{{\s*route\s*\(", cleaned):
         return "dynamic:blade-route"
     return action
+
+
+def _phoenix_route_helper_action(action: str) -> str | None:
+    matches = list(
+        re.finditer(
+            r"\bRoutes\.(?P<helper>[A-Za-z_]\w*(?:_path|_url))\s*\([^)]*?:"
+            r"(?P<action>[A-Za-z_]\w*)",
+            action,
+        )
+    )
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    return f"phoenix-helper:{match.group('helper')}:{match.group('action')}"
 
 
 def _php_dynamic_action(action: str) -> str:

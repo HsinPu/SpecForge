@@ -60,6 +60,10 @@ def _best_match(
     if named_route_matches:
         return _best_method_match(call, named_route_matches, "named-route")
 
+    phoenix_helper_matches = _phoenix_helper_matches(call, routes)
+    if phoenix_helper_matches:
+        return _best_method_match(call, phoenix_helper_matches, "phoenix-helper")
+
     endpoint = _normalize_path(call.endpoint)
     if not endpoint:
         return None
@@ -96,7 +100,7 @@ def _best_method_match(
     for route in routes:
         route_method = route.method.upper()
         if route_method in {"ANY", "ALL"} or call_method == route_method:
-            confidence = "high" if match_type in {"exact", "named-route"} else "medium"
+            confidence = "high" if match_type in {"exact", "named-route", "phoenix-helper"} else "medium"
             return route, match_type, confidence
     for route in routes:
         route_method = route.method.upper()
@@ -128,6 +132,58 @@ def _laravel_route_name(route: ApiRouteFact) -> str | None:
     note = route.evidence.note or ""
     match = re.search(r"(?:^|;)laravel-route-name:([^;]+)", note)
     return match.group(1).strip() if match else None
+
+
+def _phoenix_helper_matches(call: ApiCallFact, routes: list[ApiRouteFact]) -> list[ApiRouteFact]:
+    endpoint = call.endpoint.strip().strip("'\"`")
+    match = re.fullmatch(r"phoenix-helper:(?P<helper>[A-Za-z_]\w*(?:_path|_url)):(?P<action>[A-Za-z_]\w*)", endpoint)
+    if not match:
+        return []
+    controller = _phoenix_controller_from_helper(match.group("helper"))
+    action = match.group("action")
+    handler_matches = [
+        route
+        for route in routes
+        if route.framework == "phoenix" and _phoenix_route_handler_matches(route.handler, controller, action)
+    ]
+    if not handler_matches:
+        return []
+    helper_paths = {route.path for route in handler_matches}
+    same_path_matches = [
+        route
+        for route in routes
+        if route.framework == "phoenix" and route.path in helper_paths
+    ]
+    return _dedupe_routes([*handler_matches, *same_path_matches])
+
+
+def _phoenix_route_handler_matches(handler: str | None, controller: str, action: str) -> bool:
+    if not handler:
+        return False
+    expected = f"{controller}:{action}"
+    return handler == expected or handler.endswith(f".{expected}")
+
+
+def _dedupe_routes(routes: list[ApiRouteFact]) -> list[ApiRouteFact]:
+    seen: set[tuple[str, str, str | None, str]] = set()
+    result: list[ApiRouteFact] = []
+    for route in routes:
+        key = (route.method, route.path, route.handler, route.framework)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(route)
+    return result
+
+
+def _phoenix_controller_from_helper(helper: str) -> str:
+    stem = re.sub(r"_(?:path|url)$", "", helper)
+    word_overrides = {
+        "api": "API",
+        "sso": "SSO",
+        "oauth": "OAuth",
+    }
+    return "".join(word_overrides.get(part, part.capitalize()) for part in stem.split("_") if part) + "Controller"
 
 
 def _normalize_path(value: str) -> str:

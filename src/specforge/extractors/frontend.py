@@ -33,6 +33,12 @@ CLIENT_CALL_RE = re.compile(
     r"\(\s*(?P<quote>['\"`])(?P<endpoint>[^'\"`]+)(?P=quote)",
     re.IGNORECASE,
 )
+API_PATH_CLIENT_CALL_RE = re.compile(
+    r"\b(?P<client>api|client|http|request|requests|service)\.(?P<method>get|post|put|delete|patch|del)"
+    r"\s*\(\s*(?:[A-Za-z_$][\w$]*\.)?apiPath\s*\(\s*[^,]+,\s*"
+    r"(?P<quote>['\"`])(?P<endpoint>.*?)(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
 NAMED_CLIENT_CALL_RE = re.compile(
     r"\b(?P<client>[A-Za-z_$][\w$]*(?:Api|API|Client|Http|Request|Service))"
     r"\.(?P<method>get|post|put|delete|patch)"
@@ -1094,6 +1100,25 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
                 ),
             )
         )
+    for match in API_PATH_CLIENT_CALL_RE.finditer(source):
+        if _looks_like_backend_route_registration_context(source, match.start("method")):
+            continue
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=_plausible_api_path_endpoint(match.group("endpoint"), endpoint_context),
+                method=_http_method_from_client_method(match.group("method")),
+                client=match.group("client"),
+                trigger="runtime",
+                context="apiPath-helper",
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, match.end()),
+                ),
+            )
+        )
     for match in NAMED_CLIENT_CALL_RE.finditer(source):
         if _looks_like_backend_route_registration_context(source, match.start("method")):
             continue
@@ -1139,6 +1164,8 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     calls.extend(_extract_dart_api_route_client_calls(root, file_fact, source))
     for match in DART_CLIENT_VARIABLE_CALL_RE.finditer(source):
         if file_fact.language in {"csharp", "razor"} or file_fact.path.lower().endswith((".cs", ".razor", ".cshtml")):
+            continue
+        if _client_variable_endpoint_is_call_prefix(source, match):
             continue
         if not file_fact.path.lower().endswith(".dart") and _looks_like_service_facade_receiver(match.group("client")):
             continue
@@ -1286,14 +1313,14 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     for match in COMPOSABLE_API_RE.finditer(source):
         if _looks_like_function_declaration_context(source, match.start()):
             continue
-        endpoint = _api_endpoint_from_expression(match.group("endpoint"))
+        endpoint = _composable_api_endpoint(match.group("client"), match.group("endpoint"))
         if not endpoint:
             continue
         calls.append(
             ApiCallFact(
                 path=file_fact.path,
                 endpoint=endpoint,
-                method=_fetch_method(match.group("args") or ""),
+                method=_composable_api_method(match.group("client"), match.group("args") or ""),
                 client=match.group("client"),
                 trigger="runtime",
                 context="composable-api",
@@ -2230,6 +2257,32 @@ def _api_endpoint_from_expression(expression: str) -> str | None:
     if re.fullmatch(r"[A-Za-z_$][\w$]*", value):
         return f"dynamic:{value}"
     return None
+
+
+def _composable_api_endpoint(client: str, expression: str) -> str | None:
+    normalized_client = client.lower()
+    if normalized_client in {"usequeryapi", "usesearchandpaginatequeryapi"}:
+        return "/api/stats/:domain/query"
+    return _api_endpoint_from_expression(expression)
+
+
+def _composable_api_method(client: str, args: str) -> str:
+    normalized_client = client.lower()
+    if normalized_client in {"usequeryapi", "usesearchandpaginatequeryapi"}:
+        return "POST"
+    return _fetch_method(args)
+
+
+def _plausible_api_path_endpoint(path_expression: str, context: dict[str, str] | None = None) -> str:
+    path = _normalize_dynamic_endpoint(path_expression, context).strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return _normalize_client_endpoint(f"/api/stats/:domain{path}", context)
+
+
+def _client_variable_endpoint_is_call_prefix(source: str, match: re.Match[str]) -> bool:
+    suffix = source[match.end("endpoint") : match.end("endpoint") + 8].lstrip()
+    return suffix.startswith((".", "("))
 
 
 def _endpoint_from_js_endpoint_expression(expression: str, context: dict[str, str] | None = None) -> str:
