@@ -353,6 +353,11 @@ RAILS_SCOPE_RE = re.compile(r"^scope\s+:?(?P<name>[A-Za-z_]\w*)\b(?!\s*:)")
 RAILS_SCOPE_MODULE_RE = re.compile(r"^scope\s+module:\s*(?::[A-Za-z_]\w*|['\"][A-Za-z_]\w*['\"])")
 RAILS_NAMESPACE_RE = re.compile(r"^namespace\s+:?(?P<name>[A-Za-z_]\w*)")
 RAILS_BLOCK_SCOPE_RE = re.compile(r"^(?P<kind>collection|member)\s+do$")
+RAILS_INLINE_BLOCK_ROUTE_RE = re.compile(
+    r"^(?P<scope>collection|member)\s*\{\s*"
+    r"(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]+)['\"](?P<args>.*?)\s*\}\s*$",
+    re.IGNORECASE,
+)
 RAILS_RESOURCES_RE = re.compile(r"^(?P<kind>resources?|resource)\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$")
 RAILS_SYMBOL_ROUTE_RE = re.compile(r"^(?P<method>get|post|put|patch|delete)\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$", re.IGNORECASE)
 RAILS_DEVISE_TOKEN_AUTH_RE = re.compile(r"^mount_devise_token_auth_for\b(?P<args>.*)$", re.IGNORECASE)
@@ -7393,7 +7398,27 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                 )
             continue
 
-        if resource_match := RAILS_RESOURCES_RE.match(stripped):
+        if inline_block_route := RAILS_INLINE_BLOCK_ROUTE_RE.match(stripped):
+            if inline_block_route.group("scope") == "collection":
+                base = base_collection
+            else:
+                base = base_member or base_collection
+            args = inline_block_route.group("args") or ""
+            route_path = _join_paths(base, inline_block_route.group("path"))
+            routes.append(
+                _rails_route(
+                    file_fact,
+                    inline_block_route.group("method").upper(),
+                    route_path,
+                    _rails_route_handler(args, stack, inline_block_route.group("path")),
+                    "rails-route",
+                    line_number,
+                )
+            )
+            continue
+
+        resource_statement = _rails_continued_statement(lines, index)
+        if resource_match := RAILS_RESOURCES_RE.match(resource_statement):
             name = resource_match.group("name")
             args = resource_match.group("args") or ""
             is_singular = resource_match.group("kind") == "resource"
@@ -7411,7 +7436,7 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                     line_number,
                 )
             )
-            if stripped.endswith("do"):
+            if re.search(r"\bdo\s*(?:#.*)?$", resource_statement):
                 stack.append({"indent": indent, "collection": collection_path, "member": member_path, "name": name})
             continue
 
