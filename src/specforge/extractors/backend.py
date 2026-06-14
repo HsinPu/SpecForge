@@ -9311,9 +9311,12 @@ def _extract_openapi_yaml_routes(file_fact: FileFact, source: str) -> list[ApiRo
             continue
         if line and not line.startswith((" ", "\t")) and not line.startswith("paths:"):
             break
-        path_match = re.match(r"^\s{2}(?P<path>/[^:\s]+):\s*$", line)
+        path_match = re.match(
+            r"^\s{2}(?:(?P<quote>['\"])(?P<quoted>/[^'\"]+)(?P=quote)|(?P<bare>/[^:\s]+)):\s*$",
+            line,
+        )
         if path_match:
-            current_path = path_match.group("path")
+            current_path = path_match.group("quoted") or path_match.group("bare")
             continue
         method_match = re.match(r"^\s{4}(?P<method>get|post|put|delete|patch|options|head):\s*$", line, re.IGNORECASE)
         if not method_match or not current_path:
@@ -9424,7 +9427,7 @@ def _openapi_json_response_summary(operation: dict[object, object]) -> str | Non
 
 
 def _openapi_yaml_response_summary(block: str) -> str | None:
-    codes = re.findall(r"^\s*['\"]?(?P<code>\d{3}|default)['\"]?:\s*$", block, re.MULTILINE)
+    codes = re.findall(r"^\s*['\"]?(?P<code>\d{3}|[1-5]XX|default)['\"]?:\s*$", block, re.MULTILINE)
     if not codes:
         return None
     return f"responses:{','.join(_dedupe(codes)[:10])}"

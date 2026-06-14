@@ -1992,7 +1992,7 @@ def _response_type_status_codes(response_type: str | None) -> list[str]:
         return [
             value.strip()
             for value in response_type.removeprefix("responses:").split(",")
-            if re.fullmatch(r"[1-5]\d\d", value.strip())
+            if re.fullmatch(r"[1-5](?:\d\d|XX)", value.strip())
         ]
     return []
 
