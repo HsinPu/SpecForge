@@ -7337,10 +7337,11 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
         or is_app_routes_file
     )
     is_plugin_file = normalized.endswith("plugin.rb")
-    if not is_routes_file and not is_plugin_file:
+    is_engine_file = normalized.endswith("/engine.rb") or normalized == "engine.rb"
+    if not is_routes_file and not is_plugin_file and not is_engine_file:
         return []
     source = _read(root, file_fact)
-    if (is_plugin_file or is_app_routes_file) and not _looks_like_rails_routes_source(normalized, source):
+    if (is_plugin_file or is_app_routes_file or is_engine_file) and not _looks_like_rails_routes_source(normalized, source):
         return []
     engine_mounts = _rails_engine_mount_prefixes(str(root))
     routes: list[ApiRouteFact] = []
