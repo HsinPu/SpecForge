@@ -3358,6 +3358,7 @@ def _api_client_endpoint_context(
     parent_name = parent_match.group("parent") if parent_match else None
     if parent_name and parent_name not in {"ApiClient", "CacheEnabledApiClient"}:
         local_context = _js_string_constants(source)
+        local_context.update(_js_query_string_constants(source))
         imported_parent = _local_default_import_source(source, root, current_path, parent_name)
         if imported_parent:
             parent_path, parent_source = imported_parent
@@ -3368,6 +3369,7 @@ def _api_client_endpoint_context(
         return local_context
     context = _direct_api_client_endpoint_context(source)
     context.update(_js_string_constants(source))
+    context.update(_js_query_string_constants(source))
     return context
 
 
@@ -3426,6 +3428,17 @@ def _js_string_constants(source: str) -> dict[str, str]:
         else:
             constants[name] = value
             constants[f"this.{name}"] = value
+    return constants
+
+
+def _js_query_string_constants(source: str) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    for match in re.finditer(
+        r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+        r"(?:window\.)?(?:document\.)?location\.search\b",
+        source,
+    ):
+        constants[match.group("name")] = "?"
     return constants
 
 
