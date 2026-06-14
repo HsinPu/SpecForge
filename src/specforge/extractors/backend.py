@@ -5814,9 +5814,11 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
         route_prefix = _join_paths(file_prefix, _laravel_prefix_for_offset(groups, match.start()))
         path = _join_paths(route_prefix, match.group("path"))
         handler = _laravel_handler_from_args(match.group("args"))
+        route_tail = _php_statement_tail(source, match.end())
+        route_name = _laravel_route_name(match.group("args") + route_tail)
         line = _line_for_offset(source, match.start())
         for method in _laravel_match_methods(match.group("methods")):
-            routes.append(_laravel_route(file_fact.path, line, method, path, handler, "laravel-route"))
+            routes.append(_laravel_route(file_fact.path, line, method, path, handler, "laravel-route", route_name))
     for match in LARAVEL_ROUTE_RE.finditer(source):
         raw_method = match.group("method")
         route_prefix = _join_paths(file_prefix, _laravel_prefix_for_offset(groups, match.start()))
@@ -5838,7 +5840,8 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
             continue
         method = "ANY" if raw_method.lower() == "any" else raw_method.upper()
-        routes.append(_laravel_route(file_fact.path, line, method, _join_paths(route_prefix, raw_path), handler, "laravel-route"))
+        route_name = _laravel_route_name(match.group("args") + route_tail)
+        routes.append(_laravel_route(file_fact.path, line, method, _join_paths(route_prefix, raw_path), handler, "laravel-route", route_name))
     return routes
 
 
@@ -5849,6 +5852,7 @@ def _laravel_route(
     path: str,
     handler: str | None,
     kind: str,
+    route_name: str | None = None,
 ) -> ApiRouteFact:
     normalized_path = _ensure_slash(path)
     return ApiRouteFact(
@@ -5857,7 +5861,13 @@ def _laravel_route(
         handler=handler,
         framework="laravel",
         kind=kind,
-        evidence=Evidence(file=file_path, kind="backend-route", line_start=line, line_end=line),
+        evidence=Evidence(
+            file=file_path,
+            kind="backend-route",
+            line_start=line,
+            line_end=line,
+            note=f"laravel-route-name:{route_name}" if route_name else None,
+        ),
         parameters=_laravel_path_parameters(normalized_path, file_path, line),
         request_body="request" if method in {"POST", "PUT", "PATCH"} else None,
     )
@@ -5939,6 +5949,16 @@ def _php_statement_tail(source: str, offset: int) -> str:
     if end < 0:
         return ""
     return source[offset:end]
+
+
+def _laravel_route_name(source: str) -> str | None:
+    fluent = re.search(r"->name\(\s*['\"](?P<name>[^'\"]+)['\"]\s*\)", source)
+    if fluent:
+        return fluent.group("name")
+    array_name = re.search(r"['\"](?:as|name)['\"]\s*=>\s*['\"](?P<name>[^'\"]+)['\"]", source)
+    if array_name:
+        return array_name.group("name")
+    return None
 
 
 def _laravel_match_methods(source: str) -> list[str]:

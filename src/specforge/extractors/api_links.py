@@ -56,6 +56,10 @@ def _best_match(
     call: ApiCallFact,
     routes: list[ApiRouteFact],
 ) -> tuple[ApiRouteFact, str, str] | None:
+    named_route_matches = _named_route_matches(call, routes)
+    if named_route_matches:
+        return _best_method_match(call, named_route_matches, "named-route")
+
     endpoint = _normalize_path(call.endpoint)
     if not endpoint:
         return None
@@ -92,7 +96,7 @@ def _best_method_match(
     for route in routes:
         route_method = route.method.upper()
         if route_method in {"ANY", "ALL"} or call_method == route_method:
-            confidence = "high" if match_type == "exact" else "medium"
+            confidence = "high" if match_type in {"exact", "named-route"} else "medium"
             return route, match_type, confidence
     for route in routes:
         route_method = route.method.upper()
@@ -104,6 +108,26 @@ def _best_method_match(
     if match_type != "exact":
         return None
     return routes[0], "method-mismatch", "low"
+
+
+def _named_route_matches(call: ApiCallFact, routes: list[ApiRouteFact]) -> list[ApiRouteFact]:
+    endpoint = call.endpoint.strip().strip("'\"`")
+    if not endpoint.startswith("route:"):
+        return []
+    route_name = endpoint.removeprefix("route:").strip()
+    if not route_name:
+        return []
+    return [
+        route
+        for route in routes
+        if route.framework == "laravel" and _laravel_route_name(route) == route_name
+    ]
+
+
+def _laravel_route_name(route: ApiRouteFact) -> str | None:
+    note = route.evidence.note or ""
+    match = re.search(r"(?:^|;)laravel-route-name:([^;]+)", note)
+    return match.group(1).strip() if match else None
 
 
 def _normalize_path(value: str) -> str:
