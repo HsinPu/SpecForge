@@ -368,9 +368,9 @@ RAILS_DEVISE_FOR_RE = re.compile(r"^devise_for\s+:?(?P<name>[A-Za-z_]\w*)(?P<arg
 RAILS_WORDS_LOOP_RE = re.compile(
     r"^%(?:w|i)\[(?P<values>[^\]]+)\]\.(?:each|each_with_index)\s+do\s+\|(?P<vars>[^|]+)\|"
 )
-RAILS_ENGINE_DRAW_RE = re.compile(r"^(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\.routes\.draw\s+do$")
+RAILS_ENGINE_DRAW_RE = re.compile(r"^(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\.routes\.draw\s+do$")
 RAILS_ENGINE_MOUNT_RE = re.compile(
-    r"\bmount\s+(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\s*,\s*at:\s*['\"](?P<path>[^'\"]+)['\"]"
+    r"\bmount\s+(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\s*,\s*at:\s*['\"](?P<path>[^'\"]+)['\"]"
 )
 PHOENIX_ROUTE_RE = re.compile(
     r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
@@ -7198,6 +7198,8 @@ def _extract_sinatra_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
     if normalized == "config/routes.rb" or normalized.startswith("config/routes/"):
         return []
     source = _read(root, file_fact)
+    if _looks_like_rails_routes_source(normalized, source):
+        return []
     if not _looks_like_sinatra_source(source):
         return []
     class_ranges = _sinatra_class_ranges(source)
@@ -7223,6 +7225,19 @@ def _extract_sinatra_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
             )
         )
     return _dedupe_routes(routes)
+
+
+def _looks_like_rails_routes_source(normalized_path: str, source: str) -> bool:
+    if normalized_path.endswith("plugin.rb"):
+        return re.search(r"\.routes\.(?:append|draw)\s*(?:do|\{)", source) is not None
+    if not (normalized_path.endswith("/config/routes.rb") or "/config/routes/" in f"/{normalized_path}"):
+        return False
+    return bool(
+        re.search(
+            r"(?:Rails\.application|(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*::Engine)\.routes\.draw\s+do",
+            source,
+        )
+    )
 
 
 def _sinatra_route_body(source: str, offset: int) -> str:
@@ -7305,14 +7320,18 @@ def _sinatra_response_type(window: str) -> str | None:
 
 def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
     normalized = file_fact.path.replace("\\", "/").lower()
-    if (
-        normalized != "config/routes.rb"
-        and not normalized.endswith("/config/routes.rb")
-        and not (normalized.startswith("config/routes/") and normalized.endswith(".rb"))
-        and not ("/config/routes/" in normalized and normalized.endswith(".rb"))
-    ):
+    is_routes_file = (
+        normalized == "config/routes.rb"
+        or normalized.endswith("/config/routes.rb")
+        or (normalized.startswith("config/routes/") and normalized.endswith(".rb"))
+        or ("/config/routes/" in normalized and normalized.endswith(".rb"))
+    )
+    is_plugin_file = normalized.endswith("plugin.rb")
+    if not is_routes_file and not is_plugin_file:
         return []
     source = _read(root, file_fact)
+    if is_plugin_file and not _looks_like_rails_routes_source(normalized, source):
+        return []
     engine_mounts = _rails_engine_mount_prefixes(str(root))
     routes: list[ApiRouteFact] = []
     stack: list[dict[str, object]] = []
