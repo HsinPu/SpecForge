@@ -325,6 +325,8 @@ def extract_static_frontend_facts(
             forms.extend(_extract_forms(file_fact, source))
             assets.extend(_extract_page_assets(file_fact, source))
 
+    api_calls.extend(_form_api_calls(forms))
+
     return pages, forms, assets, styles, routes, api_calls
 
 
@@ -1074,6 +1076,52 @@ def _extract_php_forms(file_fact: FileFact, source: str) -> list[FormFact]:
             )
         )
     return forms
+
+
+def _form_api_calls(forms: list[FormFact]) -> list[ApiCallFact]:
+    calls: list[ApiCallFact] = []
+    seen: set[tuple[str, str | None, str, int | None]] = set()
+    for form in forms:
+        endpoint = _form_submission_endpoint(form)
+        if endpoint is None:
+            continue
+        method = (form.method or "GET").upper()
+        key = (form.source, method, endpoint, form.evidence.line_start)
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append(
+            ApiCallFact(
+                path=form.source,
+                endpoint=endpoint,
+                method=method,
+                client="form",
+                trigger="form-submit",
+                context="form-submit",
+                evidence=form.evidence,
+            )
+        )
+    return calls
+
+
+def _form_submission_endpoint(form: FormFact) -> str | None:
+    if not form.action:
+        return None
+    endpoint = form.action.strip()
+    if not endpoint or endpoint.startswith("phx-submit:"):
+        return None
+    if _is_non_http_form_action(endpoint):
+        return None
+    if _is_template_endpoint_fragment(endpoint):
+        return "dynamic:form-action"
+    if (form.method or "").upper() == "LIVE_EVENT":
+        return None
+    return endpoint
+
+
+def _is_non_http_form_action(endpoint: str) -> bool:
+    lower = endpoint.lower()
+    return endpoint.startswith("#") or lower.startswith(("javascript:", "mailto:", "tel:", "data:"))
 
 
 def _php_form_fields(source: str) -> list[str]:
