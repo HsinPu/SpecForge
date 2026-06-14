@@ -3501,7 +3501,7 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
     normalized = re.sub(r"\$([A-Za-z_]\w*)", r":\1", normalized)
     if "?" in normalized:
         normalized = normalized.split("?", 1)[0]
-    normalized = re.sub(r"(?<!/):[A-Za-z_$][\w$]*$", "", normalized)
+    normalized = re.sub(r"(?<![/_-]):[A-Za-z_$][\w$]*$", "", normalized)
     return normalized
 
 

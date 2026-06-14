@@ -536,13 +536,13 @@ def _static_choice_param_signature(route_path: str, endpoint: str) -> tuple[tupl
                 return None
             signature.append(_route_param_signature_part(route_part))
             continue
-        if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
-            signature.append(route_part)
-            continue
-        if _is_route_param(endpoint_part) and not _route_param_name_looks_like_id(endpoint_part) and _static_choice_route_part_is_safe(route_part):
-            signature.append(":static-choice")
+        static_choice_signature = _static_choice_endpoint_part_signature(endpoint_part, route_part)
+        if static_choice_signature:
+            signature.append(static_choice_signature)
             alternatives.append(route_part)
             saw_choice = True
+            if _anchored_static_choice_endpoint_part(endpoint_part):
+                has_static_anchor = True
             continue
         return None
 
@@ -559,6 +559,27 @@ def _route_param_signature_part(part: str) -> str:
 
 def _static_choice_route_part_is_safe(part: str) -> bool:
     return not _is_route_param(part) and part != "*" and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", part) is not None
+
+
+def _static_choice_endpoint_part_signature(endpoint_part: str, route_part: str) -> str | None:
+    if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
+        return ":static-choice"
+    if _is_route_param(endpoint_part) and not _route_param_name_looks_like_id(endpoint_part) and _static_choice_route_part_is_safe(route_part):
+        return ":static-choice"
+    anchored = _anchored_static_choice_endpoint_part(endpoint_part)
+    if not anchored:
+        return None
+    prefix = anchored
+    if not _static_choice_route_part_is_safe(route_part):
+        return None
+    if not route_part.startswith(prefix) or route_part == prefix:
+        return None
+    return f"{prefix}:static-choice"
+
+
+def _anchored_static_choice_endpoint_part(endpoint_part: str) -> str | None:
+    match = re.fullmatch(r"(?P<prefix>[A-Za-z][A-Za-z0-9_.-]*[_-]):[A-Za-z_][\w-]*", endpoint_part)
+    return match.group("prefix") if match else None
 
 
 def _route_matches_with_anchored_text_id(route_path: str, endpoint: str) -> bool:
