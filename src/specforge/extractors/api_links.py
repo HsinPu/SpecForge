@@ -194,6 +194,10 @@ def _best_match(
             "rails-resource-text-id-param-format-suffix",
         )
 
+    static_choice_param_matches = _static_choice_param_route_matches(routes, endpoint_without_format)
+    if static_choice_param_matches:
+        return _best_method_match(call, static_choice_param_matches, "static-choice-param")
+
     trpc_matches = _trpc_procedure_matches(call, endpoint, routes)
     if trpc_matches:
         return _best_method_match(call, trpc_matches, "trpc-procedure")
@@ -212,7 +216,11 @@ def _best_method_match(
         if route_method in {"ANY", "ALL"} or call_method == route_method:
             if match_type in {"exact", "named-route", "phoenix-helper"}:
                 confidence = "high"
-            elif match_type.startswith("rails-anchored-param") or match_type.startswith("rails-resource-text-id-param"):
+            elif (
+                match_type.startswith("rails-anchored-param")
+                or match_type.startswith("rails-resource-text-id-param")
+                or match_type == "static-choice-param"
+            ):
                 confidence = "low"
             else:
                 confidence = "medium"
@@ -478,6 +486,73 @@ def _rails_resource_text_id_param_route_matches(routes: list[ApiRouteFact], endp
         and _route_matches_with_resource_text_id(route.path, endpoint)
     ]
     return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _static_choice_param_route_matches(routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
+    grouped: dict[tuple[str, ...], list[tuple[ApiRouteFact, tuple[str, ...]]]] = {}
+    for route in routes:
+        for route_variant in _route_path_variants(_route_without_format_suffix(route.path)):
+            result = _static_choice_param_signature(route_variant, endpoint)
+            if not result:
+                continue
+            signature, alternatives = result
+            grouped.setdefault(signature, []).append((route, alternatives))
+
+    matches: list[ApiRouteFact] = []
+    for candidates in grouped.values():
+        alternative_values = {alternatives for _, alternatives in candidates}
+        if len(alternative_values) < 2:
+            continue
+        matches.extend(route for route, _ in candidates)
+    return sorted(_dedupe_routes(matches), key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _static_choice_param_signature(route_path: str, endpoint: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    route = _normalize_path(route_path)
+    normalized_endpoint = _normalize_path(endpoint)
+    route_parts = route.strip("/").split("/") if route.strip("/") else []
+    endpoint_parts = normalized_endpoint.strip("/").split("/") if normalized_endpoint.strip("/") else []
+    if not route_parts or len(route_parts) != len(endpoint_parts):
+        return None
+
+    signature: list[str] = []
+    alternatives: list[str] = []
+    has_static_anchor = False
+    saw_choice = False
+    for route_part, endpoint_part in zip(route_parts, endpoint_parts):
+        if route_part == endpoint_part:
+            if not _is_route_param(route_part):
+                has_static_anchor = True
+            signature.append(route_part)
+            continue
+        if _is_route_param(route_part):
+            if not _is_endpoint_param_value(endpoint_part, route_part):
+                return None
+            signature.append(_route_param_signature_part(route_part))
+            continue
+        if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
+            signature.append(route_part)
+            continue
+        if _is_route_param(endpoint_part) and not _route_param_name_looks_like_id(endpoint_part) and _static_choice_route_part_is_safe(route_part):
+            signature.append(":static-choice")
+            alternatives.append(route_part)
+            saw_choice = True
+            continue
+        return None
+
+    if not saw_choice or not has_static_anchor:
+        return None
+    return tuple(signature), tuple(alternatives)
+
+
+def _route_param_signature_part(part: str) -> str:
+    if _route_param_name_looks_like_id(part):
+        return ":id"
+    return ":param"
+
+
+def _static_choice_route_part_is_safe(part: str) -> bool:
+    return not _is_route_param(part) and part != "*" and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", part) is not None
 
 
 def _route_matches_with_anchored_text_id(route_path: str, endpoint: str) -> bool:
