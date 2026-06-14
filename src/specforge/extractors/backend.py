@@ -291,6 +291,7 @@ FLASK_APPBUILDER_EXPOSE_RE = re.compile(r"(?m)^(?P<indent>[ \t]*)@expose\s*\(")
 PY_CLASS_STRING_ATTR_RE = re.compile(
     r"(?m)^[ \t]+(?P<name>route_base|resource_name)\s*=\s*['\"](?P<value>[^'\"]+)['\"]"
 )
+PY_INCLUDE_ROUTE_METHODS_RE = re.compile(r"\binclude_route_methods\s*=", re.MULTILINE)
 FLASK_APPBUILDER_API_BASES = {"BaseSupersetApi", "BaseSupersetModelRestApi", "ModelRestApi", "BaseApi"}
 FLASK_APPBUILDER_VIEW_BASES = {"BaseSupersetView", "BaseView", "IndexView"}
 PY_FUNCTION_SEARCH_WINDOW = 2000
@@ -3256,7 +3257,7 @@ def _extract_python_backend_routes(root: Path, file_fact: FileFact) -> list[ApiR
 
 
 def _extract_flask_appbuilder_exposes(source: str, file_fact: FileFact) -> list[ApiRouteFact]:
-    if "@expose" not in source:
+    if "@expose" not in source and "include_route_methods" not in source:
         return []
     if not _looks_like_flask_appbuilder_source(source):
         return []
@@ -3268,6 +3269,17 @@ def _extract_flask_appbuilder_exposes(source: str, file_fact: FileFact) -> list[
         class_prefix = _flask_appbuilder_class_prefix(class_name, bases, body)
         if class_prefix is None:
             continue
+        routes.extend(
+            _flask_appbuilder_model_rest_generated_routes(
+                file_fact,
+                class_name,
+                bases,
+                body,
+                body_offset,
+                source,
+                class_prefix,
+            )
+        )
         for match in FLASK_APPBUILDER_EXPOSE_RE.finditer(body):
             args = _python_call_args_at(body, match.end() - 1)
             path_fragment = _first_python_string_arg(args)
@@ -3353,6 +3365,109 @@ def _flask_appbuilder_class_prefix(class_name: str, bases: str, body: str) -> st
     if any(base in FLASK_APPBUILDER_VIEW_BASES or base.endswith("View") for base in base_names):
         return f"/{class_name.lower()}"
     return None
+
+
+def _flask_appbuilder_model_rest_generated_routes(
+    file_fact: FileFact,
+    class_name: str,
+    bases: str,
+    body: str,
+    body_offset: int,
+    source: str,
+    class_prefix: str,
+) -> list[ApiRouteFact]:
+    if not _looks_like_flask_appbuilder_model_rest_class(bases, body):
+        return []
+    route_methods = _flask_appbuilder_include_route_methods(body)
+    if not route_methods:
+        return []
+
+    include_match = PY_INCLUDE_ROUTE_METHODS_RE.search(body)
+    line = _line_for_offset(source, body_offset + include_match.start()) if include_match else _line_for_offset(source, body_offset)
+    routes: list[ApiRouteFact] = []
+
+    def append(method: str, path: str, handler: str) -> None:
+        routes.append(
+            ApiRouteFact(
+                method=method,
+                path=path,
+                handler=handler,
+                framework="flask-appbuilder",
+                kind="flask-appbuilder-model-rest-generated",
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="backend-route",
+                    line_start=line,
+                    line_end=line,
+                    note="framework-generated:ModelRestApi",
+                ),
+                class_prefix=class_name,
+                parameters=_flask_style_path_parameters(path, file_fact.path, line),
+            )
+        )
+
+    item_path = _join_paths(class_prefix, "<pk>")
+    if "get_list" in route_methods:
+        append("GET", class_prefix, "get_list")
+    if "get" in route_methods:
+        append("GET", item_path, "get")
+    if "post" in route_methods:
+        append("POST", class_prefix, "post")
+    if "put" in route_methods:
+        append("PUT", item_path, "put")
+    if "delete" in route_methods:
+        append("DELETE", item_path, "delete")
+    if "related" in route_methods:
+        append("GET", _join_paths(class_prefix, "related/<column_name>"), "related")
+    if "distinct" in route_methods:
+        append("GET", _join_paths(class_prefix, "distinct/<column_name>"), "distinct")
+    return routes
+
+
+def _looks_like_flask_appbuilder_model_rest_class(bases: str, body: str) -> bool:
+    base_names = _python_base_names(bases)
+    return (
+        "BaseSupersetModelRestApi" in base_names
+        or "ModelRestApi" in base_names
+        or any(base.endswith("ModelRestApi") for base in base_names)
+    )
+
+
+def _flask_appbuilder_include_route_methods(body: str) -> set[str]:
+    statement = _python_assignment_statement(body, "include_route_methods")
+    if not statement:
+        return set()
+
+    methods: set[str] = set()
+    if "REST_MODEL_VIEW_CRUD_SET" in statement:
+        methods.update({"get", "get_list", "post", "put", "delete"})
+
+    route_method_map = {
+        "GET": "get",
+        "GET_LIST": "get_list",
+        "POST": "post",
+        "PUT": "put",
+        "DELETE": "delete",
+        "RELATED": "related",
+        "DISTINCT": "distinct",
+    }
+    for constant, method in route_method_map.items():
+        if re.search(rf"\bRouteMethod\.{constant}\b", statement):
+            methods.add(method)
+    for item in re.findall(r"['\"](?P<name>get|get_list|post|put|delete|related|distinct)['\"]", statement):
+        methods.add(item)
+    return methods
+
+
+def _python_assignment_statement(body: str, name: str) -> str | None:
+    match = re.search(rf"(?m)^[ \t]+{re.escape(name)}\s*=", body)
+    if not match:
+        return None
+    end = len(body)
+    for next_match in re.finditer(r"(?m)^[ \t]+[A-Za-z_]\w*\s*=", body[match.end() :]):
+        end = match.end() + next_match.start()
+        break
+    return body[match.start() : end]
 
 
 def _python_base_names(bases: str) -> list[str]:
