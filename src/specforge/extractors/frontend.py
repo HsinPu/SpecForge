@@ -143,6 +143,11 @@ API_SERVICE_METHOD_RE = re.compile(
     r"\.(?P<method>get|query|post|put|update|delete)\s*\(",
     re.IGNORECASE,
 )
+API_PATH_WRAPPER_CALL_RE = re.compile(
+    r"(?<!\.)\b(?P<client>(?:fetch|get|load|query|search|suggest|post|create|update|delete|remove)"
+    r"[A-Za-z0-9_$]*)\s*\(",
+    re.IGNORECASE,
+)
 STRAPI_URL_CALL_RE = re.compile(
     r"\bgetStrapiURL\(\s*(?P<quote>['\"`])(?P<endpoint>.*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
@@ -1367,6 +1372,7 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     calls.extend(_extract_strapi_url_calls(file_fact, source, endpoint_context))
     calls.extend(_extract_openapi_ts_request_calls(file_fact, source))
     calls.extend(_extract_generated_api_client_calls(file_fact, source))
+    calls.extend(_extract_api_path_wrapper_calls(file_fact, source, endpoint_context))
     calls.extend(_extract_api_service_wrapper_calls(file_fact, source, endpoint_context))
     calls.extend(_extract_trpc_client_calls(file_fact, source))
     calls.extend(_extract_electron_ipc_client_calls(file_fact, source))
@@ -2466,6 +2472,70 @@ def _js_expression_param_name(expression: str) -> str | None:
     return identifiers[-1] if identifiers else None
 
 
+def _extract_api_path_wrapper_calls(
+    file_fact: FileFact,
+    source: str,
+    endpoint_context: dict[str, str] | None,
+) -> list[ApiCallFact]:
+    calls: list[ApiCallFact] = []
+    for match in API_PATH_WRAPPER_CALL_RE.finditer(source):
+        if _looks_like_function_declaration_context(source, match.start()):
+            continue
+        open_index = source.find("(", match.start())
+        close_index = _find_matching_delimiter(source, open_index, "(", ")")
+        if close_index is None:
+            continue
+        args = _split_js_call_args(source[open_index + 1 : close_index])
+        if not args:
+            continue
+        endpoint = _api_path_call_endpoint(args[0], endpoint_context)
+        if not endpoint:
+            continue
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=endpoint,
+                method=_api_path_wrapper_http_method(match.group("client")),
+                client=match.group("client"),
+                trigger="runtime",
+                context="apiPath-wrapper",
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, close_index),
+                ),
+            )
+        )
+    return calls
+
+
+def _api_path_call_endpoint(expression: str, context: dict[str, str] | None = None) -> str | None:
+    match = re.search(r"\b(?:[A-Za-z_$][\w$]*\.)?apiPath\s*\(", expression)
+    if not match:
+        return None
+    open_index = expression.find("(", match.start())
+    close_index = _find_matching_delimiter(expression, open_index, "(", ")")
+    if close_index is None:
+        return None
+    args = _split_js_call_args(expression[open_index + 1 : close_index])
+    if len(args) < 2:
+        return None
+    path_expression = _js_string_literal_value(args[1]) or args[1]
+    return _plausible_api_path_endpoint(path_expression, context)
+
+
+def _api_path_wrapper_http_method(client: str) -> str:
+    normalized = client.lower()
+    if normalized.startswith(("post", "create", "submit", "save")):
+        return "POST"
+    if normalized.startswith(("put", "update")):
+        return "PUT"
+    if normalized.startswith(("delete", "remove")):
+        return "DELETE"
+    return "GET"
+
+
 def _extract_api_service_wrapper_calls(
     file_fact: FileFact,
     source: str,
@@ -3258,6 +3328,7 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
     normalized = re.sub(r"\$\{\s*route\.params\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*params\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*this\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
+    normalized = re.sub(r"\$\{\s*[A-Za-z_$][\w$]*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*[A-Za-z_$][\w$]*\?\.\s*([A-Za-z_$][\w$]*)[^}]*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)
     normalized = re.sub(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}", r":\1", normalized)

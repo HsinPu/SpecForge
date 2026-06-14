@@ -42,6 +42,8 @@ defmodule DemoWeb.Router do
     post "/api/stats/:domain/query", StatsController, :query
     get "/api/stats/:domain/conversions", StatsController, :conversions
     get "/api/stats/:domain/custom-prop-values/:prop", StatsController, :custom_prop_values
+    get "/api/stats/:domain/suggestions/:filter_name", StatsController, :suggestions
+    get "/api/stats/:domain/suggestions/custom-prop-values/:prop_key", StatsController, :custom_prop_values
   end
 end
 """.strip()
@@ -80,12 +82,22 @@ end
 import * as api from './api'
 import * as url from './util/url'
 import { apiPath } from './util/url'
+import { fetchSuggestions } from './util/filters'
 import { useQueryApi } from './hooks/use-query-api'
 
 export function loadStats(site, dashboardState, queryKey, prop) {
   api.get(url.apiPath(site, '/conversions'), dashboardState)
   api.get(apiPath(site, `/custom-prop-values/${prop}`), dashboardState)
   useQueryApi(site, queryKey)
+}
+
+export function loadSuggestions(site, dashboardState, filterKey, propKey) {
+  fetchSuggestions(apiPath(site, `/suggestions/${filterKey}`), dashboardState, 'P')
+  fetchSuggestions(
+    url.apiPath(site, `/suggestions/custom-prop-values/${encodeURIComponent(propKey)}`),
+    dashboardState,
+    'Q'
+  )
 }
 """.strip()
                 + "\n",
@@ -98,6 +110,8 @@ export function loadStats(site, dashboardState, queryKey, prop) {
             self.assertIn(("api", "GET", "/api/stats/:domain/conversions", "apiPath-helper", "GET /api/stats/:domain/conversions"), calls)
             self.assertIn(("api", "GET", "/api/stats/:domain/custom-prop-values/:prop", "apiPath-helper", "GET /api/stats/:domain/custom-prop-values/:prop"), calls)
             self.assertIn(("useQueryApi", "POST", "/api/stats/:domain/query", "composable-api", "POST /api/stats/:domain/query"), calls)
+            self.assertIn(("fetchSuggestions", "GET", "/api/stats/:domain/suggestions/:filterKey", "apiPath-wrapper", "GET /api/stats/:domain/suggestions/:filter_name"), calls)
+            self.assertIn(("fetchSuggestions", "GET", "/api/stats/:domain/suggestions/custom-prop-values/:propKey", "apiPath-wrapper", "GET /api/stats/:domain/suggestions/custom-prop-values/:prop_key"), calls)
             self.assertFalse(any(call.endpoint in {"dynamic:url", "dynamic:apiPath", "dynamic:site"} for call in facts.api_calls))
 
             form_calls = {(call.method, call.endpoint, call.matched_route) for call in facts.api_calls if call.client == "form"}
