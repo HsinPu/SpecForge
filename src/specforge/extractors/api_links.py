@@ -157,12 +157,14 @@ def _best_match(
     if rails_resource_text_id_matches:
         return _best_method_match(call, rails_resource_text_id_matches, "rails-resource-text-id-param")
 
-    param_format_suffix_matches = [
-        route
-        for route in routes
-        if _route_has_static_overlap(route.path, endpoint_without_format)
-        and _route_matches(route.path, endpoint_without_format)
-    ]
+    param_format_suffix_matches = []
+    for route in routes:
+        route_without_format = _route_without_format_suffix(route.path)
+        if _route_has_static_overlap(route_without_format, endpoint_without_format) and _route_matches(
+            route_without_format,
+            endpoint_without_format,
+        ):
+            param_format_suffix_matches.append(route)
     if param_format_suffix_matches:
         return _best_method_match(call, param_format_suffix_matches, "param-format-suffix")
 
@@ -313,10 +315,14 @@ def _normalize_path(value: str) -> str:
 
 
 def _without_format_suffix(path: str) -> str:
-    for suffix in (".json",):
+    for suffix in (".json", ".csv"):
         if path.endswith(suffix) and len(path) > len(suffix):
             return path[: -len(suffix)]
     return path
+
+
+def _route_without_format_suffix(path: str) -> str:
+    return _without_format_suffix(_normalize_path(path))
 
 
 def _trpc_procedure_matches(
@@ -537,12 +543,18 @@ def _route_path_variants(path: str) -> list[str]:
         changed = False
         for variant in variants:
             match = re.search(r"\((?P<segment>/[^()]*)\)", variant)
-            if not match:
-                expanded.append(variant)
+            if match:
+                changed = True
+                expanded.append(f"{variant[:match.start()]}{variant[match.end():]}")
+                expanded.append(f"{variant[:match.start()]}{match.group('segment')}{variant[match.end():]}")
                 continue
-            changed = True
-            expanded.append(f"{variant[:match.start()]}{variant[match.end():]}")
-            expanded.append(f"{variant[:match.start()]}{match.group('segment')}{variant[match.end():]}")
+            match = re.search(r"/\((?P<segment>[^()/][^()]*)\)", variant)
+            if match:
+                changed = True
+                expanded.append(f"{variant[:match.start()]}{variant[match.end():]}")
+                expanded.append(f"{variant[:match.start()]}/{match.group('segment')}{variant[match.end():]}")
+                continue
+            expanded.append(variant)
         variants = list(dict.fromkeys(_normalize_path(variant) for variant in expanded))
         if not changed:
             break

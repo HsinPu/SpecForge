@@ -358,7 +358,8 @@ RAILS_NAMESPACE_RE = re.compile(r"^namespace\s+:?(?P<name>[A-Za-z_]\w*)")
 RAILS_BLOCK_SCOPE_RE = re.compile(r"^(?P<kind>collection|member)\s+do$")
 RAILS_INLINE_BLOCK_ROUTE_RE = re.compile(
     r"^(?P<scope>collection|member)\s*\{\s*"
-    r"(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]+)['\"](?P<args>.*?)\s*\}\s*$",
+    r"(?P<method>get|post|put|patch|delete)\s+"
+    r"(?::(?P<symbol>[A-Za-z_]\w*)|['\"](?P<path>[^'\"]+)['\"])(?P<args>.*?)\s*\}\s*$",
     re.IGNORECASE,
 )
 RAILS_RESOURCES_RE = re.compile(r"^(?P<kind>resources?|resource)\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$")
@@ -7500,14 +7501,15 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             else:
                 base = base_member or base_collection
             args = inline_block_route.group("args") or ""
-            route_path = _join_paths(base, inline_block_route.group("path"))
+            inline_path = inline_block_route.group("path") or inline_block_route.group("symbol")
+            route_path = _join_paths(base, inline_path)
             for route_path_variant in _rails_path_variants(route_path, stack):
                 routes.append(
                     _rails_route(
                         file_fact,
                         inline_block_route.group("method").upper(),
                         route_path_variant,
-                        _rails_route_handler(args, stack, inline_block_route.group("path")),
+                        _rails_route_handler(args, stack, inline_path),
                         "rails-route",
                         line_number,
                     )
@@ -7538,7 +7540,14 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                 )
             )
             if re.search(r"\bdo\s*(?:#.*)?$", resource_statement):
-                stack.append({"indent": indent, "collection": collection_path, "member": member_path, "name": name})
+                stack.append(
+                    {
+                        "indent": indent,
+                        "collection": collection_path,
+                        "member": member_path,
+                        "name": _rails_resource_controller(name, args),
+                    }
+                )
             continue
 
         if symbol_route := RAILS_SYMBOL_ROUTE_RE.match(stripped):
