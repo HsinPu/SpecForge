@@ -368,9 +368,16 @@ RAILS_DEVISE_FOR_RE = re.compile(r"^devise_for\s+:?(?P<name>[A-Za-z_]\w*)(?P<arg
 RAILS_WORDS_LOOP_RE = re.compile(
     r"^%(?:w|i)\[(?P<values>[^\]]+)\]\.(?:each|each_with_index)\s+do\s+\|(?P<vars>[^|]+)\|"
 )
-RAILS_ENGINE_DRAW_RE = re.compile(r"^(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\.routes\.draw\s+do$")
+RAILS_ENGINE_DRAW_RE = re.compile(
+    r"^(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:::Engine|Engine))\.routes\.draw\s+do$"
+)
+RAILS_ENGINE_INLINE_ROUTE_RE = re.compile(
+    r"^(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:::Engine|Engine))\.routes\.draw\s*\{\s*"
+    r"(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]*)['\"](?P<args>.*?)\s*\}\s*$",
+    re.IGNORECASE,
+)
 RAILS_ENGINE_MOUNT_RE = re.compile(
-    r"\bmount\s+(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\s*,\s*at:\s*['\"](?P<path>[^'\"]+)['\"]"
+    r"\bmount\s+(?:::)?(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:::Engine|Engine))\s*,\s*at:\s*['\"](?P<path>[^'\"]+)['\"]"
 )
 PHOENIX_ROUTE_RE = re.compile(
     r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
@@ -7228,8 +7235,8 @@ def _extract_sinatra_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
 
 
 def _looks_like_rails_routes_source(normalized_path: str, source: str) -> bool:
-    if normalized_path.endswith("plugin.rb"):
-        return re.search(r"\.routes\.(?:append|draw)\s*(?:do|\{)", source) is not None
+    if re.search(r"\.routes\.(?:append|draw)\s*(?:do|\{)", source) is not None:
+        return True
     if not (normalized_path.endswith("/config/routes.rb") or "/config/routes/" in f"/{normalized_path}"):
         return False
     return bool(
@@ -7320,17 +7327,19 @@ def _sinatra_response_type(window: str) -> str | None:
 
 def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
     normalized = file_fact.path.replace("\\", "/").lower()
+    is_app_routes_file = "/app/routes/" in f"/{normalized}" and normalized.endswith(".rb")
     is_routes_file = (
         normalized == "config/routes.rb"
         or normalized.endswith("/config/routes.rb")
         or (normalized.startswith("config/routes/") and normalized.endswith(".rb"))
         or ("/config/routes/" in normalized and normalized.endswith(".rb"))
+        or is_app_routes_file
     )
     is_plugin_file = normalized.endswith("plugin.rb")
     if not is_routes_file and not is_plugin_file:
         return []
     source = _read(root, file_fact)
-    if is_plugin_file and not _looks_like_rails_routes_source(normalized, source):
+    if (is_plugin_file or is_app_routes_file) and not _looks_like_rails_routes_source(normalized, source):
         return []
     engine_mounts = _rails_engine_mount_prefixes(str(root))
     routes: list[ApiRouteFact] = []
@@ -7351,6 +7360,23 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
 
         base_collection = str(stack[-1]["collection"]) if stack else ""
         base_member = str(stack[-1]["member"]) if stack else ""
+
+        if engine_inline_route := RAILS_ENGINE_INLINE_ROUTE_RE.match(stripped):
+            mount_prefix = engine_mounts.get(engine_inline_route.group("engine"))
+            route_path = _join_paths(mount_prefix or "", engine_inline_route.group("path"))
+            args = engine_inline_route.group("args") or ""
+            for route_path_variant in _rails_path_variants(route_path, stack):
+                routes.append(
+                    _rails_route(
+                        file_fact,
+                        engine_inline_route.group("method").upper(),
+                        route_path_variant,
+                        _rails_route_handler(args, stack, engine_inline_route.group("path")),
+                        "rails-route",
+                        line_number,
+                    )
+                )
+            continue
 
         if engine_draw := RAILS_ENGINE_DRAW_RE.match(stripped):
             mount_prefix = engine_mounts.get(engine_draw.group("engine"))
@@ -7562,6 +7588,7 @@ def _rails_engine_mount_prefixes(root_text: str) -> dict[str, str]:
             lowered.endswith("plugin.rb")
             or lowered.endswith("config/routes.rb")
             or "/config/routes/" in f"/{lowered}"
+            or "/app/routes/" in f"/{lowered}"
         ):
             continue
         try:
@@ -7569,7 +7596,12 @@ def _rails_engine_mount_prefixes(root_text: str) -> dict[str, str]:
         except OSError:
             continue
         for match in RAILS_ENGINE_MOUNT_RE.finditer(source):
-            prefixes[match.group("engine")] = _ensure_slash(match.group("path"))
+            engine = match.group("engine")
+            prefix = _ensure_slash(match.group("path"))
+            prefixes[engine] = prefix
+            short_engine = engine.split("::")[-1]
+            if short_engine != "Engine":
+                prefixes.setdefault(short_engine, prefix)
     return prefixes
 
 
