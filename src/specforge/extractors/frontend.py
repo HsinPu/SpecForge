@@ -240,6 +240,17 @@ DASH_TOP_LEVEL_PROP_RE = re.compile(
     r"(?P<value>[\s\S]+?)\s*$",
     re.IGNORECASE,
 )
+PANEL_COMPONENT_START_RE = re.compile(
+    r"\bpn\.(?:(?P<family>widgets|pane|template|indicators)\.)?"
+    r"(?P<kind>[A-Z][A-Za-z0-9_]*|panel)\s*\(",
+    re.IGNORECASE,
+)
+PANEL_STRING_ARG_RE = re.compile(r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)", re.DOTALL)
+PANEL_TOP_LEVEL_PROP_RE = re.compile(
+    r"\b(?P<key>name|title|value|options|area|site|site_url|template|sizing_mode)\s*=\s*"
+    r"(?P<value>[\s\S]+?)\s*$",
+    re.IGNORECASE,
+)
 ANGULAR_COMPONENT_RE = re.compile(
     r"@Component\s*\(\s*{(?P<meta>.*?)}\s*\)\s*export\s+class\s+(?P<name>[A-Za-z_]\w*)",
     re.DOTALL,
@@ -952,6 +963,10 @@ def _extract_components(
         dash_components = _extract_dash_components(file_fact, source)
         if dash_components:
             return dash_components
+    if normalized.endswith(".py") and _looks_like_panel_app_source(source):
+        panel_components = _extract_panel_components(file_fact, source)
+        if panel_components:
+            return panel_components
     if "component$(" in source:
         qwik_components = _extract_qwik_components(file_fact, source)
         if qwik_components:
@@ -1775,6 +1790,92 @@ def _looks_like_dash_source(source: str) -> bool:
         re.search(r"\b(?:dash\.)?Dash\s*\(", source)
         or re.search(r"\bapp\.layout\s*=", source)
         or re.search(r"@\s*app\.callback\s*\(", source)
+    )
+
+
+def _extract_panel_components(file_fact: FileFact, source: str) -> list[ComponentFact]:
+    components: list[ComponentFact] = []
+    for kind, body, offset in _iter_panel_component_calls(source):
+        kind = "Panel" if kind.lower() == "panel" else kind
+        props = _panel_component_props(body)
+        label = _panel_component_label(kind, body, props)
+        if kind in {"Column", "Row", "Tabs"} and not label and not props:
+            continue
+        name = f"{kind}:{label}" if label else kind
+        line = _line_for_offset(source, offset)
+        components.append(
+            ComponentFact(
+                name=name,
+                path=file_fact.path,
+                framework="panel",
+                props=props,
+                hooks=[],
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-component",
+                    line_start=line,
+                    line_end=line,
+                ),
+            )
+        )
+    return _dedupe_components(components)
+
+
+def _iter_panel_component_calls(source: str) -> list[tuple[str, str, int]]:
+    calls: list[tuple[str, str, int]] = []
+    for match in PANEL_COMPONENT_START_RE.finditer(source):
+        kind = match.group("kind")
+        if kind.lower() == "extension":
+            continue
+        open_paren = match.end() - 1
+        close_paren = _matching_paren_index(source, open_paren)
+        if close_paren is None:
+            continue
+        calls.append((kind, source[open_paren + 1 : close_paren], match.start()))
+    return calls
+
+
+def _panel_component_label(kind: str, body: str, props: list[str]) -> str | None:
+    prop_values = {prop.split("=", 1)[0].lower(): prop.split("=", 1)[1] for prop in props if "=" in prop}
+    for key in ("title", "name", "value", "area"):
+        value = prop_values.get(key)
+        if value:
+            return value.strip("`")
+    if kind in {"Panel", "Markdown", "HTML", "Str", "Alert"}:
+        first_arg = next(iter(_split_top_level_args(body)), "")
+        string_match = PANEL_STRING_ARG_RE.fullmatch(first_arg.strip())
+        if string_match:
+            return _clean_panel_prop_value(string_match.group("value"))
+    return None
+
+
+def _panel_component_props(body: str) -> list[str]:
+    props: list[str] = []
+    for part in _split_top_level_args(body):
+        match = PANEL_TOP_LEVEL_PROP_RE.match(part.strip())
+        if not match:
+            continue
+        key = match.group("key")
+        value = _clean_panel_prop_value(match.group("value"))
+        if value:
+            props.append(f"{key}={value}")
+    return _dedupe(props)
+
+
+def _clean_panel_prop_value(value: str) -> str:
+    cleaned = " ".join(value.strip().strip(",").strip().strip("'\"").split())
+    if len(cleaned) > 80:
+        return cleaned[:77].rstrip() + "..."
+    return cleaned
+
+
+def _looks_like_panel_app_source(source: str) -> bool:
+    return bool(
+        re.search(r"\.servable\s*\(", source)
+        or re.search(r"\bpn\.serve\s*\(|\bpanel\.serve\s*\(", source)
+    ) and bool(
+        re.search(r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bpn\.", source)
     )
 
 
@@ -2974,6 +3075,8 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
     if "gradio" in frontend_frameworks and lower.endswith(".py"):
         return True
     if "dash" in frontend_frameworks and lower.endswith(".py"):
+        return True
+    if "panel" in frontend_frameworks and lower.endswith(".py"):
         return True
     if {"expo", "react-native", "react-navigation"} & frontend_frameworks and lower.endswith((".tsx", ".jsx", ".ts", ".js")):
         return True

@@ -82,6 +82,14 @@ DASH_HEADING_RE = re.compile(
     r"\bhtml\.H[12]\s*\(\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
     re.DOTALL,
 )
+PANEL_TITLE_RE = re.compile(
+    r"\btitle\s*=\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+PANEL_MARKDOWN_TITLE_RE = re.compile(
+    r"\bpn\.(?:pane\.)?Markdown\s*\(\s*(?P<quote>['\"])\s*#{1,2}\s*(?P<title>[^'\"\r\n]+)(?P=quote)",
+    re.DOTALL,
+)
 TAG_RE = re.compile(r"<\.?(?P<tag>form|a|script|link|img|source)\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 FORM_TAG_RE = re.compile(r"<\.?form\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
 JSX_FORM_TAG_RE = re.compile(r"<(?P<tag>Form|fetcher\.Form)\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
@@ -180,6 +188,7 @@ def extract_static_frontend_facts(
     streamlit_main_paths = _streamlit_main_paths(root, files)
     gradio_main_paths = _gradio_main_paths(root, files)
     dash_main_paths = _dash_main_paths(root, files)
+    panel_main_paths = _panel_main_paths(root, files)
 
     for file_fact in files:
         if _is_astro_content_page_path(file_fact.path):
@@ -236,6 +245,18 @@ def extract_static_frontend_facts(
                         path=file_fact.path,
                         framework="dash",
                         kind="dash-app-route",
+                        evidence=page.evidence,
+                    )
+                )
+            elif _looks_like_panel_app_source(source):
+                page = _extract_panel_page(file_fact, source, file_fact.path in panel_main_paths)
+                pages.append(page)
+                routes.append(
+                    FrontendRouteFact(
+                        route=page.route,
+                        path=file_fact.path,
+                        framework="panel",
+                        kind="panel-app-route",
                         evidence=page.evidence,
                     )
                 )
@@ -782,6 +803,93 @@ def _dash_route(path: str) -> str:
     stem = Path(path.replace("\\", "/")).stem
     slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
     return _ensure_route(slug or "dash")
+
+
+def _extract_panel_page(file_fact: FileFact, source: str, is_main: bool) -> PageFact:
+    title, title_line = _panel_title(source)
+    evidence_line = title_line or _panel_signal_line(source)
+    return PageFact(
+        path=file_fact.path,
+        route="/" if is_main else _panel_route(file_fact.path),
+        title=title,
+        kind="panel-app",
+        template_engine="panel",
+        evidence=Evidence(
+            file=file_fact.path,
+            kind="page",
+            line_start=evidence_line,
+            line_end=evidence_line,
+        ),
+    )
+
+
+def _panel_main_paths(root: Path, files: list[FileFact]) -> set[str]:
+    candidates: list[tuple[tuple[int, str], str]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        source = _read(root, file_fact)
+        if not _looks_like_panel_app_source(source):
+            continue
+        candidates.append((_panel_main_score(file_fact.path), file_fact.path))
+    if not candidates:
+        return set()
+    return {sorted(candidates, key=lambda item: item[0])[0][1]}
+
+
+def _panel_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "panel_app.py": 1,
+        "dashboard.py": 2,
+        "main.py": 3,
+    }.get(name, 8)
+    return (priority + lower.count("/"), lower)
+
+
+def _looks_like_panel_app_source(source: str) -> bool:
+    return bool(
+        re.search(r"\.servable\s*\(", source)
+        or re.search(r"\bpn\.serve\s*\(|\bpanel\.serve\s*\(", source)
+    ) and bool(
+        re.search(r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bpn\.", source)
+    )
+
+
+def _panel_title(source: str) -> tuple[str | None, int | None]:
+    title_match = PANEL_TITLE_RE.search(source)
+    if title_match:
+        line = _line_for_offset(source, title_match.start())
+        return _clean_panel_title(title_match.group("title")), line
+    markdown_match = PANEL_MARKDOWN_TITLE_RE.search(source)
+    if markdown_match:
+        line = _line_for_offset(source, markdown_match.start())
+        return _clean_panel_title(markdown_match.group("title")), line
+    return None, None
+
+
+def _clean_panel_title(title: str) -> str:
+    return " ".join(title.split()).strip()
+
+
+def _panel_signal_line(source: str) -> int:
+    match = re.search(
+        r"\.servable\s*\(|\bpn\.serve\s*\(|\bpanel\.serve\s*\(|"
+        r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _panel_route(path: str) -> str:
+    stem = Path(path.replace("\\", "/")).stem
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
+    return _ensure_route(slug or "panel")
 
 
 def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:

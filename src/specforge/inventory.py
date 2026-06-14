@@ -1278,6 +1278,7 @@ def collect_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFac
     result.extend(_streamlit_entrypoints(root, files))
     result.extend(_gradio_entrypoints(root, files))
     result.extend(_dash_entrypoints(root, files))
+    result.extend(_panel_entrypoints(root, files))
     result.extend(_django_entrypoints(root))
     result.extend(_symfony_entrypoints(root))
     result.extend(_laravel_entrypoints(root))
@@ -1393,6 +1394,7 @@ def collect_project_commands(root: Path, files: list[FileFact]) -> list[CommandF
     commands.extend(_streamlit_project_commands(root, files))
     commands.extend(_gradio_project_commands(root, files))
     commands.extend(_dash_project_commands(root, files))
+    commands.extend(_panel_project_commands(root, files))
     commands.extend(_django_project_commands(root))
     commands.extend(_symfony_project_commands(root))
     commands.extend(_rails_project_commands(root))
@@ -2458,6 +2460,60 @@ def _dash_project_commands(root: Path, files: list[FileFact]) -> list[CommandFac
     return commands
 
 
+def _panel_entrypoints(root: Path, files: list[FileFact]) -> list[EntrypointFact]:
+    main_file = _panel_main_file(root, files)
+    if not main_file:
+        return []
+    source = _read_manifest_text(root / main_file.path)
+    line = _panel_signal_line(source)
+    return [
+        EntrypointFact(
+            path=main_file.path,
+            kind="panel-app",
+            command=f"panel serve {main_file.path}",
+            evidence=Evidence(file=main_file.path, kind="entrypoint", line_start=line, line_end=line),
+        )
+    ]
+
+
+def _panel_project_commands(root: Path, files: list[FileFact]) -> list[CommandFact]:
+    main_file = _panel_main_file(root, files)
+    commands: list[CommandFact] = []
+    if main_file:
+        source = _read_manifest_text(root / main_file.path)
+        commands.append(
+            _command(
+                main_file.path,
+                f"panel serve {main_file.path}",
+                "Run Panel app",
+                ["serve", main_file.path],
+                [],
+            )
+        )
+        if re.search(r"\bpn\.serve\s*\(|\bpanel\.serve\s*\(", source):
+            commands.append(
+                _command(
+                    main_file.path,
+                    f"python {main_file.path}",
+                    "Run Panel app via pn.serve",
+                    [main_file.path],
+                    [],
+                )
+            )
+    has_python_tests = any(file.language == "python" and file.role == "test" for file in files)
+    if main_file and (_project_uses_pytest(root) or has_python_tests):
+        commands.append(
+            _command(
+                _python_test_command_source(root, main_file.path),
+                "pytest",
+                "Run pytest suite",
+                [],
+                [],
+            )
+        )
+    return commands
+
+
 def _streamlit_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
     candidates: list[tuple[tuple[int, str], FileFact]] = []
     for file_fact in files:
@@ -2492,6 +2548,19 @@ def _dash_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
         if not _looks_like_dash_file(root, file_fact):
             continue
         candidates.append((_dash_main_score(file_fact.path), file_fact))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def _panel_main_file(root: Path, files: list[FileFact]) -> FileFact | None:
+    candidates: list[tuple[tuple[int, str], FileFact]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        if not _looks_like_panel_app_file(root, file_fact):
+            continue
+        candidates.append((_panel_main_score(file_fact.path), file_fact))
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0])[0][1]
@@ -2544,6 +2613,19 @@ def _dash_main_score(path: str) -> tuple[int, str]:
     return (priority + lower.count("/"), lower)
 
 
+def _panel_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "panel_app.py": 1,
+        "dashboard.py": 2,
+        "main.py": 3,
+    }.get(name, 8)
+    return (priority + lower.count("/"), lower)
+
+
 def _looks_like_streamlit_file(root: Path, file_fact: FileFact) -> bool:
     source = _read_manifest_text(root / file_fact.path)
     return _looks_like_streamlit_source(source)
@@ -2557,6 +2639,11 @@ def _looks_like_gradio_file(root: Path, file_fact: FileFact) -> bool:
 def _looks_like_dash_file(root: Path, file_fact: FileFact) -> bool:
     source = _read_manifest_text(root / file_fact.path)
     return _looks_like_dash_source(source)
+
+
+def _looks_like_panel_app_file(root: Path, file_fact: FileFact) -> bool:
+    source = _read_manifest_text(root / file_fact.path)
+    return _looks_like_panel_app_source(source)
 
 
 def _looks_like_streamlit_source(source: str) -> bool:
@@ -2590,6 +2677,16 @@ def _looks_like_dash_source(source: str) -> bool:
     )
 
 
+def _looks_like_panel_app_source(source: str) -> bool:
+    return bool(
+        re.search(r"\.servable\s*\(", source)
+        or re.search(r"\bpn\.serve\s*\(|\bpanel\.serve\s*\(", source)
+    ) and bool(
+        re.search(r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)", source, re.MULTILINE)
+        or re.search(r"\bpn\.", source)
+    )
+
+
 def _streamlit_signal_line(source: str) -> int:
     match = re.search(
         r"^\s*(?:import\s+streamlit\b|from\s+streamlit\s+import\b)|"
@@ -2613,6 +2710,16 @@ def _gradio_signal_line(source: str) -> int:
 def _dash_signal_line(source: str) -> int:
     match = re.search(
         r"\b(?:dash\.)?Dash\s*\(|\bapp\.layout\s*=|@\s*app\.callback\s*\(",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _panel_signal_line(source: str) -> int:
+    match = re.search(
+        r"\.servable\s*\(|\bpn\.serve\s*\(|\bpanel\.serve\s*\(|"
+        r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)",
         source,
         re.MULTILINE,
     )
