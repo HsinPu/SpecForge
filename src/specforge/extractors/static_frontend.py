@@ -1018,7 +1018,13 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
     for match in FORM_TAG_RE.finditer(source):
         raw_attrs = match.group("attrs")
         attrs = _attrs(raw_attrs)
-        action = _blade_action_from_attrs(raw_attrs) or attrs.get("action") or attrs.get("th:action") or attrs.get("@action") or _template_form_action(attrs)
+        action = (
+            _blade_action_from_attrs(raw_attrs)
+            or attrs.get("action")
+            or attrs.get("th:action")
+            or attrs.get("@action")
+            or _template_form_action(attrs, file_fact, source)
+        )
         action = _normalize_template_action(action)
         if not action and attrs.get("phx-submit"):
             action = f"phx-submit:{attrs['phx-submit']}"
@@ -1844,7 +1850,7 @@ def _template_engine(file_fact: FileFact, source: str) -> str | None:
     return None
 
 
-def _template_form_action(attrs: dict[str, str]) -> str | None:
+def _template_form_action(attrs: dict[str, str], file_fact: FileFact | None = None, source: str = "") -> str | None:
     if attrs.get("asp-page"):
         if attrs.get("asp-page-handler"):
             return f"{attrs['asp-page']}?handler={attrs['asp-page-handler']}"
@@ -1852,13 +1858,26 @@ def _template_form_action(attrs: dict[str, str]) -> str | None:
     controller = attrs.get("asp-controller")
     action = attrs.get("asp-action")
     if controller and action:
-        area = attrs.get("asp-area")
+        area = attrs.get("asp-area") or _inferred_aspnet_area(file_fact, source)
         parts = [part for part in (area, controller, action) if part]
         return "/" + "/".join(part.strip("/") for part in parts)
     if action:
         return action
     if attrs.get("asp-page-handler"):
         return f"handler:{attrs['asp-page-handler']}"
+    return None
+
+
+def _inferred_aspnet_area(file_fact: FileFact | None, source: str) -> str | None:
+    if file_fact is None:
+        return None
+    if file_fact.language != "razor" and not file_fact.path.lower().endswith(".cshtml"):
+        return None
+    normalized = file_fact.path.replace("\\", "/").lower()
+    if "/areas/admin/" in normalized or "/admin/views/" in normalized or "/views/admin/" in normalized:
+        return "Admin"
+    if re.search(r"\bLayout\s*=\s*['\"]_(?:ConfigurePlugin|AdminLayout|AdminPopupLayout)['\"]", source):
+        return "Admin"
     return None
 
 

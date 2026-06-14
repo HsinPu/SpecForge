@@ -89,7 +89,7 @@ def _best_match(
     if format_suffix_matches:
         return _best_method_match(call, format_suffix_matches, "format-suffix")
 
-    param_matches = [route for route in routes if _route_matches(route.path, endpoint)]
+    param_matches = _param_route_matches(routes, endpoint)
     if param_matches:
         return _best_method_match(call, param_matches, "param")
 
@@ -284,6 +284,37 @@ def _route_has_static_overlap(route_path: str, endpoint: str) -> bool:
     return False
 
 
+def _param_route_matches(routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
+    matches = [route for route in routes if _route_matches(route.path, endpoint) and _param_match_has_signal(route.path, endpoint)]
+    return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _param_match_has_signal(route_path: str, endpoint: str) -> bool:
+    if _route_has_static_overlap(route_path, endpoint):
+        return True
+
+    route = _normalize_path(route_path)
+    normalized_endpoint = _normalize_path(endpoint)
+    route_parts = route.strip("/").split("/") if route.strip("/") else []
+    endpoint_parts = normalized_endpoint.strip("/").split("/") if normalized_endpoint.strip("/") else []
+    if not route_parts or len(route_parts) != len(endpoint_parts):
+        return False
+
+    if len(route_parts) == 1 and _is_route_param(route_parts[0]) and _route_param_name_looks_like_id(route_parts[0]):
+        return _endpoint_part_is_id_like(endpoint_parts[0]) or _is_route_param(endpoint_parts[0])
+
+    return all(_is_route_param(part) for part in endpoint_parts)
+
+
+def _route_match_specificity(path: str) -> tuple[int, int, int]:
+    route = _normalize_path(path)
+    parts = route.strip("/").split("/") if route.strip("/") else []
+    static_count = sum(1 for part in parts if not _is_route_param(part) and part != "*")
+    param_count = sum(1 for part in parts if _is_route_param(part))
+    wildcard_count = sum(1 for part in parts if part == "*")
+    return static_count, -wildcard_count, -param_count
+
+
 def _is_route_param(part: str) -> bool:
     return bool(
         re.fullmatch(r":[A-Za-z_][\w-]*", part)
@@ -298,15 +329,20 @@ def _is_route_param(part: str) -> bool:
 def _is_endpoint_param_value(part: str, route_part: str | None = None) -> bool:
     if _is_route_param(part):
         return True
-    if re.fullmatch(r"\d+", part):
-        return True
-    if re.fullmatch(r"[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{4,})*", part):
+    if _endpoint_part_is_id_like(part):
         return True
     if route_part and _route_param_name_looks_like_id(route_part):
         return False
     if re.fullmatch(r"[A-Za-z0-9._~-]+", part):
         return True
     return False
+
+
+def _endpoint_part_is_id_like(part: str) -> bool:
+    return bool(
+        re.fullmatch(r"\d+", part)
+        or re.fullmatch(r"[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{4,})*", part)
+    )
 
 
 def _route_param_name_looks_like_id(part: str) -> bool:
