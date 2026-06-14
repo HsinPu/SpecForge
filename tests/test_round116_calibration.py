@@ -37,6 +37,11 @@ Rails.application.routes.draw do
       resource :favorite, only: [:create, :destroy]
       resources :comments, only: [:create, :index, :destroy]
       get :feed, on: :collection
+      put "publish"
+      delete "comments/:comment_id" => "comments#remove"
+      collection do
+        get "search" => "articles#search"
+      end
     end
 
     resources :tags, only: [:index]
@@ -78,6 +83,9 @@ export const comment = (slug, body) => fetch(`/api/articles/${slug}/comments`, {
             self.assertIn(("rails", "POST", "/api/articles/{slug}/comments", "comments#create"), routes)
             self.assertIn(("rails", "DELETE", "/api/articles/{slug}/comments/{id}", "comments#destroy"), routes)
             self.assertIn(("rails", "GET", "/api/articles/feed", "articles#feed"), routes)
+            self.assertIn(("rails", "PUT", "/api/articles/{slug}/publish", "articles#publish"), routes)
+            self.assertIn(("rails", "DELETE", "/api/articles/{slug}/comments/:comment_id", "comments#remove"), routes)
+            self.assertIn(("rails", "GET", "/api/articles/search", "articles#search"), routes)
             self.assertIn(("rails", "GET", "/api/tags", "tags#index"), routes)
             self.assertFalse(any(route.framework == "rails" and route.method == "ANY" for route in facts.api_routes))
 

@@ -7371,13 +7371,19 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             continue
 
         if quoted_route := RAILS_ROUTE_RE.match(stripped):
-            route_path = _join_paths(base_collection, quoted_route.group("path"))
+            args = quoted_route.group("args") or ""
+            route_scope = str(stack[-1].get("route_scope", "")) if stack else ""
+            if "on: :collection" in args or route_scope == "collection":
+                base = base_collection
+            else:
+                base = base_member or base_collection
+            route_path = _join_paths(base, quoted_route.group("path"))
             routes.append(
                 _rails_route(
                     file_fact,
                     quoted_route.group("method").upper(),
                     route_path,
-                    _first_match(quoted_route.group("args"), r"to:\s*['\"]([^'\"]+)['\"]"),
+                    _rails_route_handler(args, stack, quoted_route.group("path")),
                     "rails-route",
                     line_number,
                 )
@@ -7574,6 +7580,21 @@ def _rails_path_parameters(path: str, file_path: str, line: int) -> list[Request
         for name in names
         if name
     ]
+
+
+def _rails_route_handler(args: str, stack: list[dict[str, object]], path: str) -> str | None:
+    return (
+        _first_match(args, r"to:\s*['\"]([^'\"]+)['\"]")
+        or _first_match(args, r"=>\s*['\"]([^'\"]+)['\"]")
+        or _rails_stack_handler(stack, _rails_action_name_from_path(path))
+    )
+
+
+def _rails_action_name_from_path(path: str) -> str:
+    name = path.strip("/").rsplit("/", 1)[-1]
+    name = name.split(".", 1)[0]
+    name = name.strip(":{}")
+    return name.replace("-", "_")
 
 
 def _rails_stack_handler(stack: list[dict[str, object]], action: str) -> str | None:
