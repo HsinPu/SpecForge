@@ -331,7 +331,7 @@ WORDPRESS_PROPERTY_RE = re.compile(
 )
 WORDPRESS_CONST_RE = re.compile(r"\bconst\s+(?P<name>[A-Z_]+)\s*=\s*['\"](?P<value>[^'\"]+)['\"]", re.IGNORECASE)
 RAILS_ROUTE_RE = re.compile(
-    r"^\s*(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]+)['\"](?P<args>.*)$",
+    r"^\s*(?P<method>get|post|put|patch|delete)\s+['\"](?P<path>[^'\"]*)['\"](?P<args>.*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 SINATRA_ROUTE_RE = re.compile(
@@ -7443,7 +7443,9 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             args = resource_match.group("args") or ""
             is_singular = resource_match.group("kind") == "resource"
             path_name = _rails_resource_path_name(name, args)
-            collection_path = _join_paths(base_member, path_name)
+            route_scope = str(stack[-1].get("route_scope", "")) if stack else ""
+            resource_base = base_collection if route_scope == "collection" else base_member
+            collection_path = _join_paths(resource_base, path_name)
             member_param = _first_match(args, r"param:\s+:([A-Za-z_]\w*)") or "id"
             member_path = collection_path if is_singular else _join_paths(collection_path, f"{{{member_param}}}")
             routes.extend(

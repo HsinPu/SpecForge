@@ -99,6 +99,10 @@ def _best_match(
     if rails_anchored_param_matches:
         return _best_method_match(call, rails_anchored_param_matches, "rails-anchored-param")
 
+    rails_resource_text_id_matches = _rails_resource_text_id_param_route_matches(routes, endpoint)
+    if rails_resource_text_id_matches:
+        return _best_method_match(call, rails_resource_text_id_matches, "rails-resource-text-id-param")
+
     param_format_suffix_matches = [
         route
         for route in routes
@@ -119,6 +123,17 @@ def _best_match(
             "rails-anchored-param-format-suffix",
         )
 
+    rails_resource_text_id_format_suffix_matches = _rails_resource_text_id_param_route_matches(
+        routes,
+        endpoint_without_format,
+    )
+    if rails_resource_text_id_format_suffix_matches:
+        return _best_method_match(
+            call,
+            rails_resource_text_id_format_suffix_matches,
+            "rails-resource-text-id-param-format-suffix",
+        )
+
     trpc_matches = _trpc_procedure_matches(call, endpoint, routes)
     if trpc_matches:
         return _best_method_match(call, trpc_matches, "trpc-procedure")
@@ -137,7 +152,7 @@ def _best_method_match(
         if route_method in {"ANY", "ALL"} or call_method == route_method:
             if match_type in {"exact", "named-route", "phoenix-helper"}:
                 confidence = "high"
-            elif match_type.startswith("rails-anchored-param"):
+            elif match_type.startswith("rails-anchored-param") or match_type.startswith("rails-resource-text-id-param"):
                 confidence = "low"
             else:
                 confidence = "medium"
@@ -336,6 +351,18 @@ def _rails_anchored_text_param_route_matches(routes: list[ApiRouteFact], endpoin
     return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
 
 
+def _rails_resource_text_id_param_route_matches(routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
+    matches = [
+        route
+        for route in routes
+        if route.framework == "rails"
+        and route.kind == "rails-resource-member-route"
+        and _route_has_static_overlap(route.path, endpoint)
+        and _route_matches_with_resource_text_id(route.path, endpoint)
+    ]
+    return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
 def _route_matches_with_anchored_text_id(route_path: str, endpoint: str) -> bool:
     route = _normalize_path(route_path)
     endpoint = _normalize_path(endpoint)
@@ -355,6 +382,32 @@ def _route_matches_with_anchored_text_id(route_path: str, endpoint: str) -> bool
                 and _has_static_anchor_before(route_parts, endpoint_parts, index)
                 and _has_static_anchor_after(route_parts, endpoint_parts, index)
             ):
+                saw_text_id_param = True
+                continue
+            return False
+        if route_part == "*":
+            return True
+        if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
+            continue
+        if route_part != endpoint_part:
+            return False
+    return saw_text_id_param and bool(route_parts)
+
+
+def _route_matches_with_resource_text_id(route_path: str, endpoint: str) -> bool:
+    route = _normalize_path(route_path)
+    endpoint = _normalize_path(endpoint)
+    route_parts = route.strip("/").split("/") if route.strip("/") else []
+    endpoint_parts = endpoint.strip("/").split("/") if endpoint.strip("/") else []
+    if len(route_parts) != len(endpoint_parts):
+        return False
+
+    saw_text_id_param = False
+    for route_part, endpoint_part in zip(route_parts, endpoint_parts):
+        if _is_route_param(route_part):
+            if _is_endpoint_param_value(endpoint_part, route_part):
+                continue
+            if _route_param_name_looks_like_id(route_part) and re.fullmatch(r"[A-Za-z0-9._~-]+", endpoint_part):
                 saw_text_id_param = True
                 continue
             return False
