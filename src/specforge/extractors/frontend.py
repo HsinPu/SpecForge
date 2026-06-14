@@ -23,6 +23,7 @@ AJAX_RE = re.compile(
     r"\bajax\s*\(\s*(?P<quote>['\"`])(?P<endpoint>(?:/|https?://)[^'\"`]+)(?P=quote)(?P<args>[^)]*)",
     re.IGNORECASE | re.DOTALL,
 )
+AJAX_CALL_RE = re.compile(r"\bajax\s*\(", re.IGNORECASE)
 AXIOS_RE = re.compile(
     r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*(?P<quote>['\"`])(?P<endpoint>.*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
@@ -1046,7 +1047,8 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     calls: list[ApiCallFact] = []
     endpoint_context = _api_client_endpoint_context(source, root, file_fact.path)
     for match in FETCH_RE.finditer(source):
-        method = _fetch_method(match.group("args"))
+        call_text, call_end = _js_call_text(source, match.start())
+        method = _fetch_method_from_call(match.group("args"), call_text)
         calls.append(
             ApiCallFact(
                 path=file_fact.path,
@@ -1059,16 +1061,19 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
                     file=file_fact.path,
                     kind="frontend-api-call",
                     line_start=_line_for_offset(source, match.start()),
-                    line_end=_line_for_offset(source, match.end()),
+                    line_end=_line_for_offset(source, call_end),
                 ),
             )
         )
     for match in AJAX_RE.finditer(source):
+        if _ajax_literal_endpoint_is_concat_fragment(match.group("args")):
+            continue
+        call_text, call_end = _js_call_text(source, match.start())
         calls.append(
             ApiCallFact(
                 path=file_fact.path,
                 endpoint=_normalize_dynamic_endpoint(match.group("endpoint"), endpoint_context),
-                method=_fetch_method(match.group("args")),
+                method=_fetch_method_from_call(match.group("args"), call_text),
                 client="ajax",
                 trigger="runtime",
                 context="source",
@@ -1076,10 +1081,11 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
                     file=file_fact.path,
                     kind="frontend-api-call",
                     line_start=_line_for_offset(source, match.start()),
-                    line_end=_line_for_offset(source, match.end()),
+                    line_end=_line_for_offset(source, call_end),
                 ),
             )
         )
+    calls.extend(_extract_ajax_expression_calls(file_fact, source, endpoint_context))
     for match in AXIOS_RE.finditer(source):
         calls.append(
             ApiCallFact(
@@ -1381,6 +1387,45 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
     calls.extend(_extract_realtime_client_calls(file_fact, source))
     calls.extend(_extract_socketio_client_calls(file_fact, source))
     return _dedupe_api_calls([call for call in calls if _is_useful_api_endpoint(call.endpoint)])
+
+
+def _extract_ajax_expression_calls(
+    file_fact: FileFact,
+    source: str,
+    endpoint_context: dict[str, str] | None,
+) -> list[ApiCallFact]:
+    calls: list[ApiCallFact] = []
+    for match in AJAX_CALL_RE.finditer(source):
+        open_index = match.end() - 1
+        close_index = _find_matching_delimiter(source, open_index, "(", ")")
+        if close_index is None:
+            continue
+        args = _split_js_call_args(source[open_index + 1 : close_index])
+        if not args:
+            continue
+        if not _ajax_expression_arg_is_path_like(args[0]):
+            continue
+        method = _fetch_method(args[1] if len(args) > 1 else "")
+        for endpoint in _js_endpoint_expression_variants(args[0], endpoint_context):
+            if not _is_useful_api_endpoint(endpoint):
+                continue
+            calls.append(
+                ApiCallFact(
+                    path=file_fact.path,
+                    endpoint=endpoint,
+                    method=method,
+                    client="ajax",
+                    trigger="runtime",
+                    context="ajax-expression",
+                    evidence=Evidence(
+                        file=file_fact.path,
+                        kind="frontend-api-call",
+                        line_start=_line_for_offset(source, match.start()),
+                        line_end=_line_for_offset(source, close_index),
+                    ),
+                )
+            )
+    return calls
 
 
 def _extract_csharp_http_api_calls(file_fact: FileFact, source: str) -> list[ApiCallFact]:
@@ -3515,8 +3560,73 @@ def _vue_props(source: str) -> list[str]:
 
 
 def _fetch_method(args: str) -> str:
-    match = re.search(r"(?:^|[,{]\s*)(?:method|type)\s*:\s*['\"](?P<method>[A-Z]+)['\"]", args, re.IGNORECASE)
+    return _fetch_method_from_call(args, args)
+
+
+def _fetch_method_from_call(args: str, call_text: str) -> str:
+    match = re.search(r"(?:^|[,{]\s*)(?:method|type)\s*:\s*['\"`](?P<method>[A-Z]+)['\"`]", args, re.IGNORECASE)
+    if not match and call_text != args:
+        match = re.search(
+            r"(?:^|[,{]\s*)(?:method|type)\s*:\s*['\"`](?P<method>[A-Z]+)['\"`]",
+            call_text,
+            re.IGNORECASE,
+        )
     return match.group("method").upper() if match else "GET"
+
+
+def _ajax_literal_endpoint_is_concat_fragment(args: str) -> bool:
+    return args.lstrip().startswith("+")
+
+
+def _ajax_expression_arg_is_path_like(expression: str) -> bool:
+    value = expression.strip()
+    if not value or value.startswith("{") or re.search(r"\s\?\s", value):
+        return False
+    if re.match(r"^[A-Za-z_$][\w$]*(?:\.|$|\()", value):
+        return False
+    literal = _js_string_literal_value(value)
+    if literal is not None:
+        return literal.startswith(("/", "http://", "https://"))
+    if "+" not in value:
+        return False
+    for part in _split_js_concat_parts(value):
+        literal = _js_string_literal_value(part)
+        if literal and literal.startswith(("/", "http://", "https://")):
+            return True
+    return False
+
+
+def _js_call_text(source: str, start: int, max_chars: int = 2000) -> tuple[str, int]:
+    open_paren = source.find("(", start, min(len(source), start + 80))
+    if open_paren == -1:
+        end = min(len(source), start + max_chars)
+        return source[start:end], end
+
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    end_limit = min(len(source), open_paren + max_chars)
+    index = open_paren
+    while index < end_limit:
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in {"'", '"', "`"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1], index + 1
+        index += 1
+
+    return source[start:end_limit], end_limit
 
 
 def _frontend_framework_for_path(path: str, frameworks: list[FrameworkFact]) -> str:
