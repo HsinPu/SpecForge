@@ -24,7 +24,9 @@ Rails.application.routes.draw do
   post "/chat/api/direct-message-channels.json", to: "chat/direct_message_channels#create"
   get "/chat/direct_messages.json", to: "chat/direct_messages#index"
   get "/admin/config/site_settings", to: "admin/config#site_settings"
+  put "/admin/themes/:theme_id", to: "admin/themes#update"
   get "/posts/:id", to: "posts#show"
+  get "/:category/:section", to: "discovery#show"
 end
 """.strip()
                 + "\n",
@@ -68,6 +70,16 @@ export function siteSettings() {
   return ajax("/admin/config/site_settings.json");
 }
 
+export function updateTheme(theme) {
+  return ajax(`/admin/themes/${theme.id}.json`, {
+    type: "PUT",
+  });
+}
+
+export function colorSchemeStylesheet(scheme) {
+  return ajax(`/color-scheme-stylesheet/${scheme.id}.json`);
+}
+
 export function post(postModel) {
   return ajax(`/posts/${postModel.id}`);
 }
@@ -84,6 +96,8 @@ export function post(postModel) {
             self.assertIn(("ajax", "POST", "/chat/api/direct-message-channels.json", "POST /chat/api/direct-message-channels.json"), calls)
             self.assertIn(("ajax", "GET", "/chat/direct_messages.json", "GET /chat/direct_messages.json"), calls)
             self.assertIn(("ajax", "GET", "/admin/config/site_settings.json", "GET /admin/config/site_settings"), calls)
+            self.assertIn(("ajax", "PUT", "/admin/themes/:id.json", "PUT /admin/themes/:theme_id"), calls)
+            self.assertIn(("ajax", "GET", "/color-scheme-stylesheet/:id.json", None), calls)
             self.assertIn(("ajax", "GET", "/posts/:id", "GET /posts/:id"), calls)
 
             links = {(link.method, link.endpoint, link.matched_route, link.match_type, link.confidence) for link in facts.api_links}
@@ -91,6 +105,8 @@ export function post(postModel) {
             self.assertIn(("GET", "/onebox", "/onebox", "exact", "high"), links)
             self.assertIn(("POST", "/chat/api/direct-message-channels.json", "/chat/api/direct-message-channels.json", "exact", "high"), links)
             self.assertIn(("GET", "/admin/config/site_settings.json", "/admin/config/site_settings", "format-suffix", "medium"), links)
+            self.assertIn(("PUT", "/admin/themes/:id.json", "/admin/themes/:theme_id", "param-format-suffix", "medium"), links)
+            self.assertIn(("GET", "/color-scheme-stylesheet/:id.json", None, "unmatched", "low"), links)
             self.assertIn(("GET", "/posts/:id", "/posts/:id", "exact", "high"), links)
 
 

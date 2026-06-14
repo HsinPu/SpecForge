@@ -93,6 +93,15 @@ def _best_match(
     if param_matches:
         return _best_method_match(call, param_matches, "param")
 
+    param_format_suffix_matches = [
+        route
+        for route in routes
+        if _route_has_static_overlap(route.path, endpoint_without_format)
+        and _route_matches(route.path, endpoint_without_format)
+    ]
+    if param_format_suffix_matches:
+        return _best_method_match(call, param_format_suffix_matches, "param-format-suffix")
+
     trpc_matches = _trpc_procedure_matches(call, endpoint, routes)
     if trpc_matches:
         return _best_method_match(call, trpc_matches, "trpc-procedure")
@@ -256,6 +265,23 @@ def _route_matches(route_path: str, endpoint: str) -> bool:
         if route_part != endpoint_part:
             return False
     return bool(route_parts)
+
+
+def _route_has_static_overlap(route_path: str, endpoint: str) -> bool:
+    route = _normalize_path(route_path)
+    endpoint = _normalize_path(endpoint)
+    route_parts = route.strip("/").split("/") if route.strip("/") else []
+    endpoint_parts = endpoint.strip("/").split("/") if endpoint.strip("/") else []
+    if len(route_parts) != len(endpoint_parts):
+        return False
+    for route_part, endpoint_part in zip(route_parts, endpoint_parts):
+        if _is_route_param(route_part) or route_part == "*":
+            continue
+        if route_part == endpoint_part:
+            return True
+        if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
+            return True
+    return False
 
 
 def _is_route_param(part: str) -> bool:
