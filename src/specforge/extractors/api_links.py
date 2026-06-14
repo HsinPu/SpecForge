@@ -80,6 +80,15 @@ def _best_match(
     if aspnet_case_matches:
         return _best_method_match(call, aspnet_case_matches, "case-insensitive")
 
+    endpoint_without_format = _without_format_suffix(endpoint)
+    format_suffix_matches = [
+        route
+        for route in routes
+        if _without_format_suffix(_normalize_path(route.path)) == endpoint_without_format
+    ]
+    if format_suffix_matches:
+        return _best_method_match(call, format_suffix_matches, "format-suffix")
+
     param_matches = [route for route in routes if _route_matches(route.path, endpoint)]
     if param_matches:
         return _best_method_match(call, param_matches, "param")
@@ -201,6 +210,13 @@ def _normalize_path(value: str) -> str:
     if len(stripped) > 1:
         stripped = stripped.rstrip("/")
     return stripped
+
+
+def _without_format_suffix(path: str) -> str:
+    for suffix in (".json",):
+        if path.endswith(suffix) and len(path) > len(suffix):
+            return path[: -len(suffix)]
+    return path
 
 
 def _trpc_procedure_matches(

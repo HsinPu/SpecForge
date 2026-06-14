@@ -19,6 +19,10 @@ from specforge.models import (
 
 
 FETCH_RE = re.compile(r"(?<!\.)\bfetch\(\s*['\"`](?P<endpoint>[^'\"`]+)['\"`](?P<args>[^)]*)\)", re.DOTALL)
+AJAX_RE = re.compile(
+    r"\bajax\s*\(\s*(?P<quote>['\"`])(?P<endpoint>(?:/|https?://)[^'\"`]+)(?P=quote)(?P<args>[^)]*)",
+    re.IGNORECASE | re.DOTALL,
+)
 AXIOS_RE = re.compile(
     r"\baxios\.(?P<method>get|post|put|delete|patch)\(\s*(?P<quote>['\"`])(?P<endpoint>.*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
@@ -1034,6 +1038,23 @@ def _extract_api_calls(root: Path, file_fact: FileFact, source: str) -> list[Api
                 endpoint=_normalize_dynamic_endpoint(match.group("endpoint"), endpoint_context),
                 method=method,
                 client="fetch",
+                trigger="runtime",
+                context="source",
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-api-call",
+                    line_start=_line_for_offset(source, match.start()),
+                    line_end=_line_for_offset(source, match.end()),
+                ),
+            )
+        )
+    for match in AJAX_RE.finditer(source):
+        calls.append(
+            ApiCallFact(
+                path=file_fact.path,
+                endpoint=_normalize_dynamic_endpoint(match.group("endpoint"), endpoint_context),
+                method=_fetch_method(match.group("args")),
+                client="ajax",
                 trigger="runtime",
                 context="source",
                 evidence=Evidence(
@@ -3269,6 +3290,7 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
         or lower.startswith("app/components/")
         or "/app/components/" in f"/{lower}"
         or "/addon/components/" in f"/{lower}"
+        or lower.endswith((".gjs", ".gts", ".hbs"))
     ):
         return True
     if "blazor" in frontend_frameworks and lower.endswith((".cshtml", ".razor")):
@@ -3320,7 +3342,7 @@ def _vue_props(source: str) -> list[str]:
 
 
 def _fetch_method(args: str) -> str:
-    match = re.search(r"method\s*:\s*['\"](?P<method>[A-Z]+)['\"]", args, re.IGNORECASE)
+    match = re.search(r"(?:^|[,{]\s*)(?:method|type)\s*:\s*['\"](?P<method>[A-Z]+)['\"]", args, re.IGNORECASE)
     return match.group("method").upper() if match else "GET"
 
 
