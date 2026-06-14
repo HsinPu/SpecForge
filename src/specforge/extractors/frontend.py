@@ -2458,6 +2458,10 @@ def _client_variable_endpoint_is_call_prefix(source: str, match: re.Match[str]) 
 
 def _endpoint_from_js_endpoint_expression(expression: str, context: dict[str, str] | None = None) -> str:
     value = expression.strip()
+    cast_name = _typescript_cast_variable_name(value)
+    if cast_name:
+        endpoint = (context or {}).get(cast_name)
+        return _normalize_client_endpoint(endpoint, context) if endpoint else f"dynamic:{cast_name}"
     if "+" not in value:
         literal = _js_string_literal_value(value)
         return _normalize_client_endpoint(literal if literal is not None else value, context)
@@ -2517,6 +2521,14 @@ def _js_string_literal_value(expression: str) -> str | None:
     if len(stripped) < 2 or stripped[0] not in {"'", '"', "`"} or stripped[-1] != stripped[0]:
         return None
     return stripped[1:-1]
+
+
+def _typescript_cast_variable_name(expression: str) -> str | None:
+    match = re.fullmatch(
+        r"(?P<name>[A-Za-z_$][\w$]*)\s+as\s+[A-Za-z_$][\w$]*(?:\[\])?",
+        expression.strip(),
+    )
+    return match.group("name") if match else None
 
 
 def _js_expression_param_name(expression: str) -> str | None:
@@ -3480,6 +3492,7 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
         if not re.fullmatch(r"[A-Za-z_$][\w$]*", name):
             continue
         normalized = re.sub(r"\$\{\s*" + re.escape(name) + r"\s*\}", value.rstrip("/"), normalized)
+    normalized = _replace_js_template_expressions(normalized, context)
     normalized = normalized.replace("\r", "").replace("\n", "")
     normalized = re.sub(r"\s+", "", normalized)
     variable_with_optional_query = re.fullmatch(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}(?:\?.*)?", normalized)
@@ -3501,8 +3514,106 @@ def _normalize_dynamic_endpoint(endpoint: str, context: dict[str, str] | None = 
     normalized = re.sub(r"\$([A-Za-z_]\w*)", r":\1", normalized)
     if "?" in normalized:
         normalized = normalized.split("?", 1)[0]
+    normalized = re.sub(r"/[A-Za-z0-9_.-]+::(?=[A-Za-z_])", "/:", normalized)
     normalized = re.sub(r"(?<![/_-]):[A-Za-z_$][\w$]*$", "", normalized)
     return normalized
+
+
+def _replace_js_template_expressions(endpoint: str, context: dict[str, str]) -> str:
+    if re.fullmatch(r"\$\{\s*[A-Za-z_$][\w$]*\s*\}(?:\?.*)?", endpoint.strip()):
+        return endpoint
+    result: list[str] = []
+    index = 0
+    while index < len(endpoint):
+        start = endpoint.find("${", index)
+        if start == -1:
+            result.append(endpoint[index:])
+            break
+        result.append(endpoint[index:start])
+        end = _find_js_template_expression_end(endpoint, start + 2)
+        if end is None:
+            result.append(endpoint[start:])
+            break
+        prefix = "".join(result)
+        expression = endpoint[start + 2 : end]
+        result.append(_js_template_expression_replacement(expression, context, prefix))
+        index = end + 1
+    return "".join(result)
+
+
+def _find_js_template_expression_end(value: str, start: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(value)):
+        char = value[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char in "({[":
+            depth += 1
+            continue
+        if char in ")}]":
+            if char == "}" and depth == 0:
+                return index
+            if depth > 0:
+                depth -= 1
+            continue
+    return None
+
+
+def _js_template_expression_replacement(expression: str, context: dict[str, str], prefix: str) -> str:
+    value = expression.strip()
+    if not value:
+        return ":param"
+    if _js_template_expression_is_query_builder(value):
+        return ""
+    if value in context:
+        return context[value].rstrip("/")
+    if re.fullmatch(r"(?:this\.)?\#?[A-Za-z_$][\w$]*", value) and value in context:
+        return context[value].rstrip("/")
+
+    name = _js_template_expression_param_name(value)
+    if not name:
+        return ":param"
+    if prefix.endswith(":"):
+        return ":param"
+    return f":{name}"
+
+
+def _js_template_expression_is_query_builder(expression: str) -> bool:
+    return bool(
+        re.match(r"(?:[A-Za-z_$][\w$]*\.)?(?:toQueryString|rison\.encode)\s*\(", expression)
+        or re.match(r"(?:new\s+)?URLSearchParams\s*\(", expression)
+    )
+
+
+def _js_template_expression_param_name(expression: str) -> str | None:
+    if re.search(r"\.[A-Za-z_$][\w$]*\s*\(", expression):
+        return "param"
+    for pattern in (
+        r"^route\.params\.([A-Za-z_$][\w$]*)$",
+        r"^params\.([A-Za-z_$][\w$]*)$",
+        r"^this\.([A-Za-z_$][\w$]*)$",
+        r"^[A-Za-z_$][\w$]*\?\.\s*([A-Za-z_$][\w$]*).*$",
+        r"^[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)$",
+        r"^[A-Za-z_$][\w$]*\(\s*([A-Za-z_$][\w$]*)\s*\)$",
+        r"^([A-Za-z_$][\w$]*)$",
+    ):
+        match = re.match(pattern, expression)
+        if match:
+            return match.group(1)
+    return _js_expression_param_name(expression)
 
 
 def _normalize_client_endpoint(endpoint: str, context: dict[str, str] | None = None) -> str:
