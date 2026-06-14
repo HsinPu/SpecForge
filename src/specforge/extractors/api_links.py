@@ -91,7 +91,13 @@ def _best_match(
 
     param_matches = _param_route_matches(routes, endpoint)
     if param_matches:
-        return _best_method_match(call, param_matches, "param")
+        param_match = _best_method_match(call, param_matches, "param")
+        if param_match:
+            return param_match
+
+    rails_anchored_param_matches = _rails_anchored_text_param_route_matches(routes, endpoint)
+    if rails_anchored_param_matches:
+        return _best_method_match(call, rails_anchored_param_matches, "rails-anchored-param")
 
     param_format_suffix_matches = [
         route
@@ -101,6 +107,17 @@ def _best_match(
     ]
     if param_format_suffix_matches:
         return _best_method_match(call, param_format_suffix_matches, "param-format-suffix")
+
+    rails_anchored_param_format_suffix_matches = _rails_anchored_text_param_route_matches(
+        routes,
+        endpoint_without_format,
+    )
+    if rails_anchored_param_format_suffix_matches:
+        return _best_method_match(
+            call,
+            rails_anchored_param_format_suffix_matches,
+            "rails-anchored-param-format-suffix",
+        )
 
     trpc_matches = _trpc_procedure_matches(call, endpoint, routes)
     if trpc_matches:
@@ -118,7 +135,12 @@ def _best_method_match(
     for route in routes:
         route_method = route.method.upper()
         if route_method in {"ANY", "ALL"} or call_method == route_method:
-            confidence = "high" if match_type in {"exact", "named-route", "phoenix-helper"} else "medium"
+            if match_type in {"exact", "named-route", "phoenix-helper"}:
+                confidence = "high"
+            elif match_type.startswith("rails-anchored-param"):
+                confidence = "low"
+            else:
+                confidence = "medium"
             return route, match_type, confidence
     for route in routes:
         route_method = route.method.upper()
@@ -287,6 +309,68 @@ def _route_has_static_overlap(route_path: str, endpoint: str) -> bool:
 def _param_route_matches(routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
     matches = [route for route in routes if _route_matches(route.path, endpoint) and _param_match_has_signal(route.path, endpoint)]
     return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _rails_anchored_text_param_route_matches(routes: list[ApiRouteFact], endpoint: str) -> list[ApiRouteFact]:
+    matches = [
+        route
+        for route in routes
+        if route.framework == "rails"
+        and _route_has_static_overlap(route.path, endpoint)
+        and _route_matches_with_anchored_text_id(route.path, endpoint)
+    ]
+    return sorted(matches, key=lambda route: _route_match_specificity(route.path), reverse=True)
+
+
+def _route_matches_with_anchored_text_id(route_path: str, endpoint: str) -> bool:
+    route = _normalize_path(route_path)
+    endpoint = _normalize_path(endpoint)
+    route_parts = route.strip("/").split("/") if route.strip("/") else []
+    endpoint_parts = endpoint.strip("/").split("/") if endpoint.strip("/") else []
+    if len(route_parts) != len(endpoint_parts):
+        return False
+
+    saw_text_id_param = False
+    for index, (route_part, endpoint_part) in enumerate(zip(route_parts, endpoint_parts)):
+        if _is_route_param(route_part):
+            if _is_endpoint_param_value(endpoint_part, route_part):
+                continue
+            if (
+                _route_param_name_looks_like_id(route_part)
+                and re.fullmatch(r"[A-Za-z0-9._~-]+", endpoint_part)
+                and _has_static_anchor_before(route_parts, endpoint_parts, index)
+                and _has_static_anchor_after(route_parts, endpoint_parts, index)
+            ):
+                saw_text_id_param = True
+                continue
+            return False
+        if route_part == "*":
+            return True
+        if _endpoint_param_can_match_static_route_part(endpoint_part, route_part):
+            continue
+        if route_part != endpoint_part:
+            return False
+    return saw_text_id_param and bool(route_parts)
+
+
+def _has_static_anchor_before(route_parts: list[str], endpoint_parts: list[str], index: int) -> bool:
+    return any(
+        _route_static_part_matches_endpoint(route_part, endpoint_part)
+        for route_part, endpoint_part in zip(route_parts[:index], endpoint_parts[:index])
+    )
+
+
+def _has_static_anchor_after(route_parts: list[str], endpoint_parts: list[str], index: int) -> bool:
+    return any(
+        _route_static_part_matches_endpoint(route_part, endpoint_part)
+        for route_part, endpoint_part in zip(route_parts[index + 1 :], endpoint_parts[index + 1 :])
+    )
+
+
+def _route_static_part_matches_endpoint(route_part: str, endpoint_part: str) -> bool:
+    if _is_route_param(route_part) or route_part == "*":
+        return False
+    return route_part == endpoint_part or _endpoint_param_can_match_static_route_part(endpoint_part, route_part)
 
 
 def _param_match_has_signal(route_path: str, endpoint: str) -> bool:
