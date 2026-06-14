@@ -33,7 +33,7 @@ def render_implementation_guide(facts: ProjectFacts, gaps: list[Gap]) -> str:
     ) or "- no API contract skeletons detected"
     api_links = "\n".join(
         f"- `{link.source}` {link.method or ''} `{link.endpoint}` -> "
-        f"`{link.matched_method or ''} {link.matched_route or 'unmatched'}` "
+        f"{link.target_kind} `{link.matched_method or ''} {link.matched_route or 'unmatched'}` "
         f"({link.match_type}, {link.confidence})"
         for link in facts.api_links
     ) or "- no API links generated"

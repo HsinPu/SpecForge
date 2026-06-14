@@ -177,6 +177,7 @@ def render_architecture(facts: ProjectFacts) -> str:
     ) or "- no backend surface detected"
     api_links = "\n".join(
         f"- {link.method or 'ANY'} `{link.endpoint}` -> "
+        f"{link.target_kind} "
         f"{link.matched_method or ''} `{link.matched_route or 'unmatched'}` "
         f"({link.match_type}, {link.confidence})"
         for link in facts.api_links[:30]

@@ -88,16 +88,20 @@ def detect_gaps(facts: ProjectFacts) -> list[Gap]:
             )
         )
 
-    unmatched_api_links = [link for link in facts.api_links if link.matched_route is None]
+    unmatched_api_links = [
+        link
+        for link in facts.api_links
+        if link.matched_route is None and link.target_kind == "backend-route"
+    ]
     if unmatched_api_links:
         gaps.append(
             Gap(
                 gap_id="GAP-012",
-                title="Some frontend API calls did not match backend routes",
+                title="Some local frontend API calls did not match backend routes",
                 detail=(
-                    f"{len(unmatched_api_links)} frontend API call(s) were detected without a "
+                    f"{len(unmatched_api_links)} local frontend API call(s) were detected without a "
                     "matched backend route. Reimplementation should treat these as missing "
-                    "backend contracts or external API calls until confirmed."
+                    "backend contracts or extractor gaps until confirmed."
                 ),
                 severity="medium",
                 evidence=[

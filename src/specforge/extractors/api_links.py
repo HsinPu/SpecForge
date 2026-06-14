@@ -15,6 +15,13 @@ def build_api_links(
     linked_calls: list[ApiCallFact] = []
 
     for call in api_calls:
+        external_target = _non_backend_target(call, before_backend_match=True)
+        if external_target:
+            link = _non_backend_api_link(call, external_target)
+            links.append(link)
+            linked_calls.append(replace(call, target_kind=link.target_kind))
+            continue
+
         match = _best_match(call, api_routes)
         if match:
             route, match_type, confidence = match
@@ -29,11 +36,18 @@ def build_api_links(
                     matched_framework=route.framework,
                     match_type=match_type,
                     confidence=confidence,
+                    target_kind="backend-route",
                     evidence=[call.evidence, route.evidence],
                 )
             )
-            linked_calls.append(replace(call, matched_route=matched_route))
+            linked_calls.append(replace(call, matched_route=matched_route, target_kind="backend-route"))
         else:
+            non_backend_target = _non_backend_target(call, before_backend_match=False)
+            if non_backend_target:
+                link = _non_backend_api_link(call, non_backend_target)
+                links.append(link)
+                linked_calls.append(replace(call, target_kind=link.target_kind))
+                continue
             links.append(
                 ApiLinkFact(
                     source=call.path,
@@ -44,12 +58,52 @@ def build_api_links(
                     matched_framework=None,
                     match_type="unmatched",
                     confidence="low",
+                    target_kind="backend-route",
                     evidence=[call.evidence],
                 )
             )
-            linked_calls.append(call)
+            linked_calls.append(replace(call, target_kind="backend-route"))
 
     return links, linked_calls
+
+
+def _non_backend_target(
+    call: ApiCallFact,
+    *,
+    before_backend_match: bool,
+) -> tuple[str, str, str | None, str] | None:
+    endpoint = call.endpoint.strip().strip("'\"`")
+    if not endpoint:
+        return None
+    if endpoint.startswith(("http://", "https://")):
+        host = urlparse(endpoint).netloc or "external"
+        return "external-api", "external-url", host, "high"
+    if before_backend_match:
+        return None
+    if endpoint.startswith("dynamic:") or "${" in endpoint:
+        return "dynamic-endpoint", "dynamic-endpoint", "dynamic", "medium"
+    if endpoint.startswith("rails-helper:"):
+        return "framework-helper", "framework-helper", "rails", "medium"
+    return None
+
+
+def _non_backend_api_link(
+    call: ApiCallFact,
+    target: tuple[str, str, str | None, str],
+) -> ApiLinkFact:
+    target_kind, match_type, matched_framework, confidence = target
+    return ApiLinkFact(
+        source=call.path,
+        endpoint=call.endpoint,
+        method=call.method,
+        matched_route=None,
+        matched_method=None,
+        matched_framework=matched_framework,
+        match_type=match_type,
+        confidence=confidence,
+        target_kind=target_kind,
+        evidence=[call.evidence],
+    )
 
 
 def _best_match(

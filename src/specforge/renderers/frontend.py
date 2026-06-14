@@ -54,12 +54,12 @@ def render_api_calls(facts: ProjectFacts) -> str:
     if not facts.api_calls:
         return "# API Calls\n\nNo frontend API calls were detected by the current extractors.\n"
     rows = [
-        "| Method | Endpoint | Client | Trigger | Context | Matched Route | Source |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Method | Endpoint | Target | Client | Trigger | Context | Matched Route | Source |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for api_call in facts.api_calls:
         rows.append(
-            f"| {api_call.method or ''} | `{api_call.endpoint}` | {api_call.client} | "
+            f"| {api_call.method or ''} | `{api_call.endpoint}` | {api_call.target_kind} | {api_call.client} | "
             f"{api_call.trigger or ''} | {api_call.context or ''} | "
             f"`{api_call.matched_route or 'unmatched'}` | "
             f"{_source_link(api_call.path, api_call.evidence.line_start or 1)} |"

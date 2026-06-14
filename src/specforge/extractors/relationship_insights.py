@@ -175,7 +175,7 @@ def build_refactor_findings(
 ) -> list[RefactorFindingFact]:
     findings: list[RefactorFindingFact] = []
     for link in api_links:
-        if link.matched_route is None:
+        if link.matched_route is None and link.target_kind == "backend-route":
             findings.append(
                 RefactorFindingFact(
                     title="Unmatched frontend API call",
@@ -305,7 +305,7 @@ def build_contract_gaps(
             )
 
     for link in api_links:
-        if link.matched_route is None:
+        if link.matched_route is None and link.target_kind == "backend-route":
             gaps.append(
                 ContractGapFact(
                     contract=f"{link.method or 'ANY'} {link.endpoint}",

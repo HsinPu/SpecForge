@@ -152,8 +152,11 @@ def render_quality_report(facts: ProjectFacts) -> str:
     command_features_with_tests = [
         feature for feature in command_features if feature.tests
     ]
-    matched_api_links = [link for link in facts.api_links if link.matched_route]
-    unmatched_api_links = [link for link in facts.api_links if not link.matched_route]
+    backend_api_links = [link for link in facts.api_links if link.target_kind == "backend-route"]
+    matched_api_links = [link for link in backend_api_links if link.matched_route]
+    unmatched_api_links = [link for link in backend_api_links if not link.matched_route]
+    external_api_links = [link for link in facts.api_links if link.target_kind == "external-api"]
+    dynamic_api_links = [link for link in facts.api_links if link.target_kind == "dynamic-endpoint"]
     matched_tests = [item for item in facts.test_maps if item.target_kind != "unmatched"]
     unmatched_tests = [item for item in facts.test_maps if item.target_kind == "unmatched"]
     populated_boundaries = [boundary for boundary in facts.module_boundaries if boundary.paths]
@@ -174,8 +177,10 @@ def render_quality_report(facts: ProjectFacts) -> str:
         f"- Command feature maps: {len(command_features)}",
         f"- Command features with implementation sources: {len(command_features_with_impl)} / {len(command_features)}",
         f"- Command features with tests: {len(command_features_with_tests)} / {len(command_features)}",
-        f"- API links matched: {len(matched_api_links)} / {len(facts.api_links)}",
-        f"- API links unmatched: {len(unmatched_api_links)}",
+        f"- Backend API links matched: {len(matched_api_links)} / {len(backend_api_links)}",
+        f"- Backend API links unmatched: {len(unmatched_api_links)}",
+        f"- External API calls: {len(external_api_links)}",
+        f"- Dynamic API endpoints: {len(dynamic_api_links)}",
         f"- Tests matched: {len(matched_tests)} / {len(facts.test_maps)}",
         f"- Tests unmatched: {len(unmatched_tests)}",
         f"- Populated module boundaries: {len(populated_boundaries)} / {len(facts.module_boundaries)}",

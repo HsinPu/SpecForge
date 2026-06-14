@@ -178,8 +178,8 @@ def render_api_links(facts: ProjectFacts) -> str:
     if not facts.api_links:
         return "# API Links\n\nNo frontend-to-backend API links were generated.\n"
     rows = [
-        "| Source | Method | Endpoint | Matched Route | Framework | Match | Confidence | Evidence |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Source | Method | Endpoint | Target | Matched Route | Framework | Match | Confidence | Evidence |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for link in facts.api_links:
         evidence = link.evidence[0] if link.evidence else None
@@ -187,11 +187,11 @@ def render_api_links(facts: ProjectFacts) -> str:
         matched = (
             f"`{link.matched_method or ''} {link.matched_route}`"
             if link.matched_route
-            else "`unmatched`"
+            else f"`{link.target_kind}`"
         )
         rows.append(
             f"| `{link.source}` | {link.method or ''} | `{link.endpoint}` | "
-            f"{matched} | {link.matched_framework or ''} | "
+            f"{link.target_kind} | {matched} | {link.matched_framework or ''} | "
             f"{link.match_type} | {link.confidence} | {source} |"
         )
     return "# API Links\n\n" + "\n".join(rows) + "\n"

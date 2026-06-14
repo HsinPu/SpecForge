@@ -126,6 +126,7 @@ class ApiCallFact:
     trigger: str | None = None
     context: str | None = None
     matched_route: str | None = None
+    target_kind: str = "backend-route"
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,7 @@ class ApiLinkFact:
     matched_framework: str | None
     match_type: str
     confidence: str
+    target_kind: str = "backend-route"
     evidence: list[Evidence] = field(default_factory=list)
 
 
@@ -629,6 +631,7 @@ def api_call_fact_from_dict(value: dict[str, Any]) -> ApiCallFact:
         trigger=value.get("trigger"),
         context=value.get("context"),
         matched_route=value.get("matched_route"),
+        target_kind=value.get("target_kind", "backend-route"),
     )
 
 
@@ -822,6 +825,7 @@ def api_link_fact_from_dict(value: dict[str, Any]) -> ApiLinkFact:
         matched_framework=value.get("matched_framework"),
         match_type=value["match_type"],
         confidence=value["confidence"],
+        target_kind=value.get("target_kind", "backend-route"),
         evidence=[evidence_from_dict(item) for item in value.get("evidence", [])],
     )
 
