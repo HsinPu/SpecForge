@@ -45,6 +45,7 @@ FRONTEND_FRAMEWORKS = {
     "redwood",
     "sass",
     "selmer",
+    "shiny",
     "static-site",
     "starlight",
     "solid",
@@ -326,6 +327,7 @@ def detect_frameworks(
             ("gradio", "frontend", name == "gradio" or name.startswith("gradio")),
             ("dash", "frontend", name == "dash" or name.startswith("dash[")),
             ("panel", "frontend", name == "panel" or name.startswith("panel[")),
+            ("shiny", "frontend", name == "shiny" or name.startswith("shiny[") or name == "shinywidgets"),
             ("grpc", "backend", name in {"grpcio", "grpcio-tools", "@grpc/grpc-js", "grpc"} or "google.golang.org/grpc" in name),
             ("electron", "desktop", name == "electron" or name.startswith("@electron/")),
             ("tauri", "desktop", name == "tauri" or name.startswith("@tauri-apps/")),
@@ -603,6 +605,7 @@ def detect_frameworks(
             ("gradio", "frontend", lower.endswith((".py", ".ipynb")) and _looks_like_gradio_source(root / file_fact.path)),
             ("dash", "frontend", lower.endswith(".py") and _looks_like_dash_source(root / file_fact.path)),
             ("panel", "frontend", lower.endswith((".py", ".ipynb")) and _looks_like_panel_source(root / file_fact.path)),
+            ("shiny", "frontend", lower.endswith((".py", ".ipynb")) and _looks_like_shiny_source(root / file_fact.path)),
             ("socketio", "backend", lower.endswith((".ts", ".tsx", ".js", ".jsx", ".py")) and _looks_like_socketio_source(root / file_fact.path)),
             ("authjs", "security", lower.endswith((".ts", ".tsx", ".js", ".jsx")) and _looks_like_authjs_source(root / file_fact.path)),
             ("nextauth", "security", lower.endswith((".ts", ".tsx", ".js", ".jsx")) and _looks_like_nextauth_source(root / file_fact.path)),
@@ -904,6 +907,8 @@ def detect_frameworks(
             _add(detected, "dash", "frontend", "import", 0.9, import_fact.evidence)
         if module == "panel" or module.startswith("panel."):
             _add(detected, "panel", "frontend", "import", 0.9, import_fact.evidence)
+        if module == "shiny" or module.startswith(("shiny.", "shinywidgets")):
+            _add(detected, "shiny", "frontend", "import", 0.9, import_fact.evidence)
 
     return sorted(detected.values(), key=lambda item: (item.category, item.name, item.source))
 
@@ -1916,6 +1921,20 @@ def _looks_like_panel_source(path: Path) -> bool:
         or re.search(r"\bpn\.(?:extension|panel|serve|Column|Row|Tabs|widgets|pane|template)\b", source)
         or re.search(r"\.servable\s*\(", source)
     )
+
+
+def _looks_like_shiny_source(path: Path) -> bool:
+    source = _read_text(path)
+    has_import = bool(
+        re.search(r"^\s*(?:from\s+shiny(?:\.[A-Za-z_]\w*)?\s+import\b|import\s+shiny\b)", source, re.MULTILINE)
+        or re.search(r"\bshiny\.", source)
+    )
+    has_app_signal = bool(
+        re.search(r"\b(?:shiny\.)?App\s*\(", source)
+        or re.search(r"\b(?:ui|shiny\.ui)\.page_[A-Za-z_]\w*\s*\(", source)
+        or re.search(r"@\s*(?:render|reactive)\.[A-Za-z_]\w*", source)
+    )
+    return has_import and has_app_signal
 
 
 def _looks_like_riverpod_source(path: Path) -> bool:

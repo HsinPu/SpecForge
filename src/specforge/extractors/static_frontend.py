@@ -90,6 +90,18 @@ PANEL_MARKDOWN_TITLE_RE = re.compile(
     r"\bpn\.(?:pane\.)?Markdown\s*\(\s*(?P<quote>['\"])\s*#{1,2}\s*(?P<title>[^'\"\r\n]+)(?P=quote)",
     re.DOTALL,
 )
+SHINY_PAGE_TITLE_RE = re.compile(
+    r"\b(?:ui|shiny\.ui)\.page_[A-Za-z_]\w*\s*\(\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+SHINY_HEADING_RE = re.compile(
+    r"\b(?:ui|shiny\.ui)\.h[12]\s*\(\s*(?P<quote>['\"])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+SHINY_MARKDOWN_TITLE_RE = re.compile(
+    r"\b(?:ui|shiny\.ui)\.markdown\s*\(\s*(?P<quote>['\"])\s*#{1,2}\s*(?P<title>[^'\"\r\n]+)(?P=quote)",
+    re.DOTALL,
+)
 TAG_RE = re.compile(r"<\.?(?P<tag>form|a|script|link|img|source)\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 FORM_TAG_RE = re.compile(r"<\.?form\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
 JSX_FORM_TAG_RE = re.compile(r"<(?P<tag>Form|fetcher\.Form)\b(?P<attrs>(?:=>|->|[^>])*?)>", re.IGNORECASE | re.DOTALL)
@@ -189,6 +201,7 @@ def extract_static_frontend_facts(
     gradio_main_paths = _gradio_main_paths(root, files)
     dash_main_paths = _dash_main_paths(root, files)
     panel_main_paths = _panel_main_paths(root, files)
+    shiny_main_paths = _shiny_main_paths(root, files)
 
     for file_fact in files:
         if _is_astro_content_page_path(file_fact.path):
@@ -257,6 +270,18 @@ def extract_static_frontend_facts(
                         path=file_fact.path,
                         framework="panel",
                         kind="panel-app-route",
+                        evidence=page.evidence,
+                    )
+                )
+            elif _looks_like_shiny_source(source):
+                page = _extract_shiny_page(file_fact, source, file_fact.path in shiny_main_paths)
+                pages.append(page)
+                routes.append(
+                    FrontendRouteFact(
+                        route=page.route,
+                        path=file_fact.path,
+                        framework="shiny",
+                        kind="shiny-app-route",
                         evidence=page.evidence,
                     )
                 )
@@ -890,6 +915,100 @@ def _panel_route(path: str) -> str:
     stem = Path(path.replace("\\", "/")).stem
     slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
     return _ensure_route(slug or "panel")
+
+
+def _extract_shiny_page(file_fact: FileFact, source: str, is_main: bool) -> PageFact:
+    title, title_line = _shiny_title(source)
+    evidence_line = title_line or _shiny_signal_line(source)
+    return PageFact(
+        path=file_fact.path,
+        route="/" if is_main else _shiny_route(file_fact.path),
+        title=title,
+        kind="shiny-app",
+        template_engine="shiny",
+        evidence=Evidence(
+            file=file_fact.path,
+            kind="page",
+            line_start=evidence_line,
+            line_end=evidence_line,
+        ),
+    )
+
+
+def _shiny_main_paths(root: Path, files: list[FileFact]) -> set[str]:
+    candidates: list[tuple[tuple[int, str], str]] = []
+    for file_fact in files:
+        if file_fact.language != "python" or file_fact.role in {"test", "sample", "generated", "documentation"}:
+            continue
+        source = _read(root, file_fact)
+        if not _looks_like_shiny_source(source):
+            continue
+        candidates.append((_shiny_main_score(file_fact.path), file_fact.path))
+    if not candidates:
+        return set()
+    return {sorted(candidates, key=lambda item: item[0])[0][1]}
+
+
+def _shiny_main_score(path: str) -> tuple[int, str]:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    name = Path(lower).name
+    priority = {
+        "app.py": 0,
+        "shiny_app.py": 1,
+        "main.py": 2,
+        "server.py": 3,
+    }.get(name, 8)
+    return (priority + lower.count("/"), lower)
+
+
+def _looks_like_shiny_source(source: str) -> bool:
+    has_import = bool(
+        re.search(r"^\s*(?:from\s+shiny(?:\.[A-Za-z_]\w*)?\s+import\b|import\s+shiny\b)", source, re.MULTILINE)
+        or re.search(r"\bshiny\.", source)
+    )
+    has_app_signal = bool(
+        re.search(r"\b(?:shiny\.)?App\s*\(", source)
+        or re.search(r"\b(?:ui|shiny\.ui)\.page_[A-Za-z_]\w*\s*\(", source)
+        or re.search(r"@\s*(?:render|reactive)\.[A-Za-z_]\w*", source)
+    )
+    return has_import and has_app_signal
+
+
+def _shiny_title(source: str) -> tuple[str | None, int | None]:
+    heading_match = SHINY_HEADING_RE.search(source)
+    if heading_match:
+        line = _line_for_offset(source, heading_match.start())
+        return _clean_shiny_title(heading_match.group("title")), line
+    markdown_match = SHINY_MARKDOWN_TITLE_RE.search(source)
+    if markdown_match:
+        line = _line_for_offset(source, markdown_match.start())
+        return _clean_shiny_title(markdown_match.group("title")), line
+    page_match = SHINY_PAGE_TITLE_RE.search(source)
+    if page_match:
+        line = _line_for_offset(source, page_match.start())
+        return _clean_shiny_title(page_match.group("title")), line
+    return None, None
+
+
+def _clean_shiny_title(title: str) -> str:
+    return " ".join(title.split()).strip()
+
+
+def _shiny_signal_line(source: str) -> int:
+    match = re.search(
+        r"^\s*(?:from\s+shiny(?:\.[A-Za-z_]\w*)?\s+import\b|import\s+shiny\b)|"
+        r"\b(?:shiny\.)?App\s*\(|\b(?:ui|shiny\.ui)\.page_[A-Za-z_]\w*\s*\(",
+        source,
+        re.MULTILINE,
+    )
+    return _line_for_offset(source, match.start()) if match else 1
+
+
+def _shiny_route(path: str) -> str:
+    stem = Path(path.replace("\\", "/")).stem
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
+    return _ensure_route(slug or "shiny")
 
 
 def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:

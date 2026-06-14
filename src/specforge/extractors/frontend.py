@@ -251,6 +251,22 @@ PANEL_TOP_LEVEL_PROP_RE = re.compile(
     r"(?P<value>[\s\S]+?)\s*$",
     re.IGNORECASE,
 )
+SHINY_COMPONENT_START_RE = re.compile(
+    r"\b(?:ui|shiny\.ui)\."
+    r"(?P<kind>page_[A-Za-z_]\w*|input_[A-Za-z_]\w*|output_[A-Za-z_]\w*|"
+    r"h[1-6]|markdown|HTML|div|span|card|layout_[A-Za-z_]\w*|"
+    r"navset_[A-Za-z_]\w*|nav_panel|sidebar|value_box|download_button)"
+    r"\s*\(",
+    re.IGNORECASE,
+)
+SHINY_STRING_ARG_RE = re.compile(r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)", re.DOTALL)
+SHINY_TOP_LEVEL_PROP_RE = re.compile(
+    r"\b(?P<key>id|label|choices|selected|value|title|height|width|placeholder|class_|fillable|sidebar)\s*=\s*"
+    r"(?P<value>[\s\S]+?)\s*$",
+    re.IGNORECASE,
+)
+SHINY_INPUT_CALL_RE = re.compile(r"\binput\.(?P<name>[A-Za-z_]\w*)\s*\(")
+SHINY_DECORATOR_RE = re.compile(r"@\s*(?P<namespace>render|reactive)\.(?P<kind>[A-Za-z_]\w*)")
 ANGULAR_COMPONENT_RE = re.compile(
     r"@Component\s*\(\s*{(?P<meta>.*?)}\s*\)\s*export\s+class\s+(?P<name>[A-Za-z_]\w*)",
     re.DOTALL,
@@ -967,6 +983,10 @@ def _extract_components(
         panel_components = _extract_panel_components(file_fact, source)
         if panel_components:
             return panel_components
+    if normalized.endswith(".py") and _looks_like_shiny_source(source):
+        shiny_components = _extract_shiny_components(file_fact, source)
+        if shiny_components:
+            return shiny_components
     if "component$(" in source:
         qwik_components = _extract_qwik_components(file_fact, source)
         if qwik_components:
@@ -1509,6 +1529,10 @@ def _extract_state_usages(file_fact: FileFact, source: str, frontend_frameworks:
         "streamlit" in frontend_frameworks or _looks_like_streamlit_source(source)
     ):
         usages.extend(_extract_streamlit_state_usages(file_fact, source))
+    if (file_fact.language == "python" or file_fact.path.lower().endswith(".py")) and (
+        "shiny" in frontend_frameworks or _looks_like_shiny_source(source)
+    ):
+        usages.extend(_extract_shiny_state_usages(file_fact, source))
     if is_angular_state_source:
         usages.extend(_extract_angular_state_usages(file_fact, source))
     for library, usage, pattern in STATE_PATTERNS:
@@ -1877,6 +1901,138 @@ def _looks_like_panel_app_source(source: str) -> bool:
         re.search(r"^\s*(?:import\s+panel\b|from\s+panel\s+import\b)", source, re.MULTILINE)
         or re.search(r"\bpn\.", source)
     )
+
+
+def _extract_shiny_components(file_fact: FileFact, source: str) -> list[ComponentFact]:
+    components: list[ComponentFact] = []
+    for kind, body, offset in _iter_shiny_component_calls(source):
+        normalized_kind = _normalize_shiny_component_kind(kind)
+        props = _shiny_component_props(kind, body)
+        label = _shiny_component_label(kind, normalized_kind, body, props)
+        if normalized_kind in {"Div", "Span"} and not label and not props:
+            continue
+        name = f"{normalized_kind}:{label}" if label else normalized_kind
+        line = _line_for_offset(source, offset)
+        components.append(
+            ComponentFact(
+                name=name,
+                path=file_fact.path,
+                framework="shiny",
+                props=props,
+                hooks=[],
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="frontend-component",
+                    line_start=line,
+                    line_end=line,
+                ),
+            )
+        )
+    return _dedupe_components(components)
+
+
+def _iter_shiny_component_calls(source: str) -> list[tuple[str, str, int]]:
+    calls: list[tuple[str, str, int]] = []
+    for match in SHINY_COMPONENT_START_RE.finditer(source):
+        open_paren = match.end() - 1
+        close_paren = _matching_paren_index(source, open_paren)
+        if close_paren is None:
+            continue
+        calls.append((match.group("kind"), source[open_paren + 1 : close_paren], match.start()))
+    return calls
+
+
+def _normalize_shiny_component_kind(kind: str) -> str:
+    if kind.upper() == "HTML":
+        return "HTML"
+    if re.fullmatch(r"h[1-6]", kind, re.IGNORECASE):
+        return kind.upper()
+    return "".join(part[:1].upper() + part[1:].lower() for part in kind.split("_") if part)
+
+
+def _shiny_component_label(kind: str, normalized_kind: str, body: str, props: list[str]) -> str | None:
+    prop_values = {prop.split("=", 1)[0].lower(): prop.split("=", 1)[1] for prop in props if "=" in prop}
+    if kind.lower().startswith(("input_", "output_")):
+        for key in ("id", "output_id"):
+            value = prop_values.get(key)
+            if value:
+                return value.strip("`")
+        first_arg = next(iter(_split_top_level_args(body)), "")
+        string_match = SHINY_STRING_ARG_RE.fullmatch(first_arg.strip())
+        if string_match:
+            return _clean_shiny_prop_value(string_match.group("value"))
+    for key in ("title", "label", "value"):
+        value = prop_values.get(key)
+        if value:
+            return value.strip("`")
+    if normalized_kind in {"H1", "H2", "H3", "H4", "H5", "H6", "Markdown", "HTML", "NavPanel"}:
+        first_arg = next(iter(_split_top_level_args(body)), "")
+        string_match = SHINY_STRING_ARG_RE.fullmatch(first_arg.strip())
+        if string_match:
+            return _clean_shiny_prop_value(string_match.group("value"))
+    return None
+
+
+def _shiny_component_props(kind: str, body: str) -> list[str]:
+    props: list[str] = []
+    parts = _split_top_level_args(body)
+    if kind.lower().startswith(("input_", "output_")):
+        string_args = [
+            _clean_shiny_prop_value(match.group("value"))
+            for part in parts[:2]
+            if (match := SHINY_STRING_ARG_RE.fullmatch(part.strip()))
+        ]
+        if string_args:
+            props.append(f"id={string_args[0]}")
+        if len(string_args) > 1:
+            props.append(f"label={string_args[1]}")
+    for part in parts:
+        match = SHINY_TOP_LEVEL_PROP_RE.match(part.strip())
+        if not match:
+            continue
+        key = match.group("key")
+        value = _clean_shiny_prop_value(match.group("value"))
+        if value:
+            props.append(f"{key}={value}")
+    return _dedupe(props)
+
+
+def _clean_shiny_prop_value(value: str) -> str:
+    cleaned = " ".join(value.strip().strip(",").strip().strip("'\"").split())
+    if len(cleaned) > 80:
+        return cleaned[:77].rstrip() + "..."
+    return cleaned
+
+
+def _looks_like_shiny_source(source: str) -> bool:
+    has_import = bool(
+        re.search(r"^\s*(?:from\s+shiny(?:\.[A-Za-z_]\w*)?\s+import\b|import\s+shiny\b)", source, re.MULTILINE)
+        or re.search(r"\bshiny\.", source)
+    )
+    has_app_signal = bool(
+        re.search(r"\b(?:shiny\.)?App\s*\(", source)
+        or re.search(r"\b(?:ui|shiny\.ui)\.page_[A-Za-z_]\w*\s*\(", source)
+        or re.search(r"@\s*(?:render|reactive)\.[A-Za-z_]\w*", source)
+    )
+    return has_import and has_app_signal
+
+
+def _extract_shiny_state_usages(file_fact: FileFact, source: str) -> list[StateUsageFact]:
+    usages: list[StateUsageFact] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_usage(usage: str, name: str, offset: int) -> None:
+        key = (usage, name)
+        if key in seen:
+            return
+        seen.add(key)
+        usages.append(_state_usage(file_fact, source, offset, "shiny", usage, name))
+
+    for match in SHINY_INPUT_CALL_RE.finditer(source):
+        append_usage("input", match.group("name"), match.start())
+    for match in SHINY_DECORATOR_RE.finditer(source):
+        append_usage(match.group("namespace"), match.group("kind"), match.start())
+    return usages
 
 
 def _extract_angular_state_usages(file_fact: FileFact, source: str) -> list[StateUsageFact]:
@@ -3077,6 +3233,8 @@ def _is_frontend_candidate(path: str, frontend_frameworks: set[str], framework_n
     if "dash" in frontend_frameworks and lower.endswith(".py"):
         return True
     if "panel" in frontend_frameworks and lower.endswith(".py"):
+        return True
+    if "shiny" in frontend_frameworks and lower.endswith(".py"):
         return True
     if {"expo", "react-native", "react-navigation"} & frontend_frameworks and lower.endswith((".tsx", ".jsx", ".ts", ".js")):
         return True
