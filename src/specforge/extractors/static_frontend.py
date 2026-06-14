@@ -1032,6 +1032,7 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
             action = _sveltekit_form_action(file_fact.path, action, method)
         form_end = _form_body_end(source, match.end())
         body = source[match.end() : form_end if form_end >= 0 else match.end() + 1200]
+        method_override = _template_form_method_override(body)
         fields = _form_fields(body)
         if not action and not method and not fields:
             continue
@@ -1042,7 +1043,13 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
                 method=method,
                 action=action,
                 fields=fields,
-                evidence=Evidence(file=file_fact.path, kind="form", line_start=line, line_end=line),
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="form",
+                    line_start=line,
+                    line_end=line,
+                    note=f"form-method-override:{method_override}" if method_override else None,
+                ),
             )
         )
     if file_fact.language in {"erb", "ruby-template"} or file_fact.path.lower().endswith((".erb", ".rsb", ".builder", ".ruby")):
@@ -1055,6 +1062,20 @@ def _extract_forms(file_fact: FileFact, source: str) -> list[FormFact]:
 def _form_body_end(source: str, start: int) -> int:
     ends = [index for marker in ("</form>", "</.form>") if (index := source.find(marker, start)) >= 0]
     return min(ends) if ends else -1
+
+
+def _template_form_method_override(source: str) -> str | None:
+    blade = re.search(r"@method\(\s*['\"](?P<method>PUT|PATCH|DELETE|POST)['\"]\s*\)", source, re.IGNORECASE)
+    if blade:
+        return blade.group("method").upper()
+    hidden = re.search(
+        r"<input\b(?=[^>]*\bname\s*=\s*['\"]_method['\"])(?=[^>]*\bvalue\s*=\s*['\"](?P<method>PUT|PATCH|DELETE|POST)['\"])[^>]*>",
+        source,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if hidden:
+        return hidden.group("method").upper()
+    return None
 
 
 def _extract_php_forms(file_fact: FileFact, source: str) -> list[FormFact]:
@@ -1070,6 +1091,7 @@ def _extract_php_forms(file_fact: FileFact, source: str) -> list[FormFact]:
         method = attrs.get("method", "GET").upper() if "method" in attrs else None
         form_end = source.find("</form>", tag_end)
         body = source[tag_end + 1 : form_end if form_end >= 0 else tag_end + 1800]
+        method_override = _template_form_method_override(body)
         line = _line_for_offset(source, match.start())
         forms.append(
             FormFact(
@@ -1077,7 +1099,13 @@ def _extract_php_forms(file_fact: FileFact, source: str) -> list[FormFact]:
                 method=method,
                 action=action,
                 fields=_php_form_fields(body),
-                evidence=Evidence(file=file_fact.path, kind="form", line_start=line, line_end=line),
+                evidence=Evidence(
+                    file=file_fact.path,
+                    kind="form",
+                    line_start=line,
+                    line_end=line,
+                    note=f"form-method-override:{method_override}" if method_override else None,
+                ),
             )
         )
     return forms
@@ -1090,7 +1118,7 @@ def _form_api_calls(forms: list[FormFact]) -> list[ApiCallFact]:
         endpoint = _form_submission_endpoint(form)
         if endpoint is None:
             continue
-        method = (form.method or "GET").upper()
+        method = _form_effective_submission_method(form)
         key = (form.source, method, endpoint, form.evidence.line_start)
         if key in seen:
             continue
@@ -1107,6 +1135,14 @@ def _form_api_calls(forms: list[FormFact]) -> list[ApiCallFact]:
             )
         )
     return calls
+
+
+def _form_effective_submission_method(form: FormFact) -> str:
+    note = form.evidence.note or ""
+    match = re.search(r"(?:^|;)form-method-override:(PUT|PATCH|DELETE|POST)(?:;|$)", note, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return (form.method or "GET").upper()
 
 
 def _form_submission_endpoint(form: FormFact) -> str | None:

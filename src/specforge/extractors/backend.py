@@ -5812,16 +5812,18 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
     routes: list[ApiRouteFact] = []
     for match in LARAVEL_MATCH_ROUTE_RE.finditer(source):
         route_prefix = _join_paths(file_prefix, _laravel_prefix_for_offset(groups, match.start()))
+        name_prefix = _laravel_name_prefix_for_offset(groups, match.start())
         path = _join_paths(route_prefix, match.group("path"))
         handler = _laravel_handler_from_args(match.group("args"))
         route_tail = _php_statement_tail(source, match.end())
-        route_name = _laravel_route_name(match.group("args") + route_tail)
+        route_name = _join_laravel_route_names(name_prefix, _laravel_route_name(match.group("args") + route_tail))
         line = _line_for_offset(source, match.start())
         for method in _laravel_match_methods(match.group("methods")):
             routes.append(_laravel_route(file_fact.path, line, method, path, handler, "laravel-route", route_name))
     for match in LARAVEL_ROUTE_RE.finditer(source):
         raw_method = match.group("method")
         route_prefix = _join_paths(file_prefix, _laravel_prefix_for_offset(groups, match.start()))
+        name_prefix = _laravel_name_prefix_for_offset(groups, match.start())
         raw_path = match.group("path")
         handler = _laravel_handler_from_args(match.group("args"))
         route_tail = _php_statement_tail(source, match.end())
@@ -5835,12 +5837,13 @@ def _extract_laravel_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFac
                     raw_path,
                     handler,
                     match.group("args") + route_tail,
+                    name_prefix,
                     api_only=raw_method.lower() == "apiresource",
                 )
             )
             continue
         method = "ANY" if raw_method.lower() == "any" else raw_method.upper()
-        route_name = _laravel_route_name(match.group("args") + route_tail)
+        route_name = _join_laravel_route_names(name_prefix, _laravel_route_name(match.group("args") + route_tail))
         routes.append(_laravel_route(file_fact.path, line, method, _join_paths(route_prefix, raw_path), handler, "laravel-route", route_name))
     return routes
 
@@ -5873,8 +5876,8 @@ def _laravel_route(
     )
 
 
-def _laravel_route_groups(source: str) -> list[tuple[int, int, str]]:
-    groups: list[tuple[int, int, str]] = []
+def _laravel_route_groups(source: str) -> list[tuple[int, int, str, str]]:
+    groups: list[tuple[int, int, str, str]] = []
     for match in re.finditer(r"\bRoute::group\s*\(", source):
         open_index = source.find("(", match.start())
         brace_index = source.find("{", open_index, open_index + 500)
@@ -5884,17 +5887,17 @@ def _laravel_route_groups(source: str) -> list[tuple[int, int, str]]:
         if end is None:
             continue
         head = source[open_index + 1 : brace_index]
-        prefix = _laravel_prefix_from_group_head(head)
-        if prefix:
-            groups.append((brace_index, end, prefix))
+        prefix, name_prefix = _laravel_group_attrs_from_group_head(head)
+        if prefix or name_prefix:
+            groups.append((brace_index, end, prefix, name_prefix))
     for match in re.finditer(r"->group\s*\(", source):
         statement_start = source.rfind(";", 0, match.start()) + 1
         route_start = source.find("Route::", statement_start, match.start())
         if route_start < 0:
             continue
         chain = source[route_start : match.end()]
-        prefix = _laravel_prefix_from_fluent_chain(chain)
-        if not prefix:
+        prefix, name_prefix = _laravel_group_attrs_from_fluent_chain(chain)
+        if not prefix and not name_prefix:
             continue
         open_index = match.end() - 1
         brace_index = source.find("{", open_index, open_index + 500)
@@ -5902,30 +5905,68 @@ def _laravel_route_groups(source: str) -> list[tuple[int, int, str]]:
             continue
         end = _find_matching_code_brace(source, brace_index)
         if end is not None:
-            groups.append((brace_index, end, prefix))
+            groups.append((brace_index, end, prefix, name_prefix))
     return sorted(set(groups), key=lambda item: item[0])
 
 
 def _laravel_prefix_from_group_head(source: str) -> str:
-    match = re.search(r"['\"]prefix['\"]\s*=>\s*['\"](?P<prefix>[^'\"]+)['\"]", source)
-    if match:
-        return match.group("prefix")
-    return ""
+    return _laravel_group_attrs_from_group_head(source)[0]
+
+
+def _laravel_group_attrs_from_group_head(source: str) -> tuple[str, str]:
+    prefix = ""
+    name_prefix = ""
+    prefix_match = re.search(r"['\"]prefix['\"]\s*=>\s*['\"](?P<prefix>[^'\"]+)['\"]", source)
+    if prefix_match:
+        prefix = prefix_match.group("prefix")
+    name_match = re.search(r"['\"](?:as|name)['\"]\s*=>\s*['\"](?P<name>[^'\"]+)['\"]", source)
+    if name_match:
+        name_prefix = name_match.group("name")
+    return prefix, name_prefix
 
 
 def _laravel_prefix_from_fluent_chain(source: str) -> str:
+    return _laravel_group_attrs_from_fluent_chain(source)[0]
+
+
+def _laravel_group_attrs_from_fluent_chain(source: str) -> tuple[str, str]:
     prefix = ""
+    name_prefix = ""
     for match in re.finditer(r"(?:Route::|->)prefix\(\s*['\"](?P<prefix>[^'\"]+)['\"]\s*\)", source):
         prefix = _join_paths(prefix, match.group("prefix"))
-    return prefix
+    for match in re.finditer(r"(?:Route::|->)(?:as|name)\(\s*['\"](?P<name>[^'\"]+)['\"]\s*\)", source):
+        name_prefix = _join_laravel_route_names(name_prefix, match.group("name")) or ""
+    return prefix, name_prefix
 
 
-def _laravel_prefix_for_offset(groups: list[tuple[int, int, str]], offset: int) -> str:
+def _laravel_prefix_for_offset(groups: list[tuple[int, int, str, str]], offset: int) -> str:
     prefix = ""
-    for start, end, value in groups:
+    for start, end, value, _name_prefix in groups:
         if start < offset < end:
             prefix = _join_paths(prefix, value)
     return prefix
+
+
+def _laravel_name_prefix_for_offset(groups: list[tuple[int, int, str, str]], offset: int) -> str:
+    prefix = ""
+    for start, end, _path_prefix, value in groups:
+        if start < offset < end:
+            prefix = _join_laravel_route_names(prefix, value) or ""
+    return prefix
+
+
+def _join_laravel_route_names(prefix: str | None, name: str | None) -> str | None:
+    if not name:
+        return None
+    if not prefix:
+        return name.strip(".")
+    cleaned_prefix = prefix.strip(".")
+    cleaned_name = name.strip(".")
+    if not cleaned_prefix:
+        return cleaned_name
+    if not cleaned_name:
+        return cleaned_prefix
+    return f"{cleaned_prefix}.{cleaned_name}"
 
 
 def _laravel_handler_from_args(args: str) -> str | None:
@@ -5973,6 +6014,7 @@ def _laravel_resource_routes(
     resource: str,
     handler: str | None,
     args: str,
+    name_prefix: str,
     *,
     api_only: bool,
 ) -> list[ApiRouteFact]:
@@ -5993,6 +6035,10 @@ def _laravel_resource_routes(
     routes: list[ApiRouteFact] = []
     for action in actions:
         for method, path in action_templates.get(action, []):
+            route_name = _join_laravel_route_names(
+                name_prefix,
+                _laravel_resource_route_name(resource, action),
+            )
             routes.append(
                 _laravel_route(
                     file_path,
@@ -6001,9 +6047,20 @@ def _laravel_resource_routes(
                     _join_paths(prefix, path),
                     f"{handler}@{action}" if handler and "@" not in handler else handler,
                     kind,
+                    route_name,
                 )
             )
     return routes
+
+
+def _laravel_resource_route_name(resource: str, action: str) -> str:
+    name_parts = [
+        _laravel_resource_base(part)
+        for part in resource.strip("/").split("/")
+        if part and not part.startswith("{")
+    ]
+    base = ".".join(part.strip(".") for part in name_parts if part.strip("."))
+    return f"{base}.{action}" if base else action
 
 
 def _laravel_resource_actions(args: str, api_only: bool) -> list[str]:
