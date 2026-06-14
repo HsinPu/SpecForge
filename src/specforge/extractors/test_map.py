@@ -756,9 +756,11 @@ def _command_python_module_is_imported(haystack: str, command_path: str) -> bool
     if not module or module.endswith(".__init__"):
         return False
     escaped = re.escape(module)
+    stem = re.escape(Path(normalized).stem)
     return bool(
         re.search(rf"\bfrom\s+{escaped}\s+import\b", haystack)
         or re.search(rf"\bimport\s+{escaped}(?:\b|\s*,)", haystack)
+        or re.search(rf"\bimport_app\s*\(\s*['\"](?:{escaped}|{stem})['\"]", haystack)
     )
 
 
