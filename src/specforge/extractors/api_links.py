@@ -118,6 +118,10 @@ def _best_match(
     if phoenix_helper_matches:
         return _best_method_match(call, phoenix_helper_matches, "phoenix-helper")
 
+    rails_helper_matches = _rails_helper_matches(call, routes)
+    if rails_helper_matches:
+        return _best_method_match(call, rails_helper_matches, "rails-helper")
+
     endpoint = _normalize_path(call.endpoint)
     if not endpoint:
         return None
@@ -295,6 +299,59 @@ def _phoenix_controller_from_helper(helper: str) -> str:
         "oauth": "OAuth",
     }
     return "".join(word_overrides.get(part, part.capitalize()) for part in stem.split("_") if part) + "Controller"
+
+
+def _rails_helper_matches(call: ApiCallFact, routes: list[ApiRouteFact]) -> list[ApiRouteFact]:
+    endpoint = call.endpoint.strip().strip("'\"`")
+    match = re.fullmatch(r"rails-helper:(?P<helper>[A-Za-z_]\w*(?:_path|_url))", endpoint)
+    if not match:
+        return []
+    stem = re.sub(r"_(?:path|url)$", "", match.group("helper"))
+    handler_matches = [route for route in routes if route.framework == "rails" and _rails_route_handler_helper_matches(route.handler, stem)]
+    path_matches = [route for route in routes if route.framework == "rails" and _rails_route_path_helper_matches(route.path, stem)]
+    return _dedupe_routes([*handler_matches, *path_matches])
+
+
+def _rails_route_handler_helper_matches(handler: str | None, stem: str) -> bool:
+    if not handler or "#" not in handler:
+        return False
+    controller, action = handler.split("#", 1)
+    controller = controller.strip().replace("/", "_")
+    action = action.strip()
+    if stem == f"{controller}_{action}":
+        return True
+    resource_actions = {
+        "index",
+        "create",
+        "show",
+        "update",
+        "destroy",
+        "new",
+        "edit",
+    }
+    return action in resource_actions and stem in {controller, _singularize_rails_helper_stem(controller)}
+
+
+def _rails_route_path_helper_matches(path: str, stem: str) -> bool:
+    normalized = _without_format_suffix(_normalize_path(path))
+    parts = [part for part in normalized.strip("/").split("/") if part and not _is_route_param(part) and part != "*"]
+    if not parts:
+        return False
+    full_name = "_".join(_rails_helper_segment(part) for part in parts)
+    collection_name = _rails_helper_segment(parts[0])
+    return stem in {full_name, collection_name}
+
+
+def _rails_helper_segment(segment: str) -> str:
+    return segment.strip().replace("-", "_")
+
+
+def _singularize_rails_helper_stem(stem: str) -> str:
+    if stem.endswith("ies") and len(stem) > 3:
+        return f"{stem[:-3]}y"
+    if stem.endswith("s") and len(stem) > 1:
+        return stem[:-1]
+    return stem
 
 
 def _normalize_path(value: str) -> str:
