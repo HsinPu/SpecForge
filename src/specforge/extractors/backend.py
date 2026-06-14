@@ -350,6 +350,9 @@ GRAPE_PARAM_LINE_RE = re.compile(r"^\s*(?P<kind>requires|optional)\s+:(?P<name>[
 RAILS_SCOPE_PATH_RE = re.compile(r"^scope\s+path:\s*['\"](?P<path>[^'\"]+)['\"]")
 RAILS_QUOTED_SCOPE_RE = re.compile(r"^scope\s+['\"](?P<path>[^'\"]+)['\"]")
 RAILS_SCOPE_RE = re.compile(r"^scope\s+:?(?P<name>[A-Za-z_]\w*)\b(?!\s*:)")
+RAILS_SCOPE_MODULE_PATH_RE = re.compile(
+    r"^scope\s+module:\s*(?::[A-Za-z_]\w*|['\"][^'\"]+['\"])\s*,\s*path:\s*['\"](?P<path>[^'\"]+)['\"]"
+)
 RAILS_SCOPE_MODULE_RE = re.compile(r"^scope\s+module:\s*(?::[A-Za-z_]\w*|['\"][A-Za-z_]\w*['\"])")
 RAILS_NAMESPACE_RE = re.compile(r"^namespace\s+:?(?P<name>[A-Za-z_]\w*)")
 RAILS_BLOCK_SCOPE_RE = re.compile(r"^(?P<kind>collection|member)\s+do$")
@@ -364,6 +367,10 @@ RAILS_DEVISE_TOKEN_AUTH_RE = re.compile(r"^mount_devise_token_auth_for\b(?P<args
 RAILS_DEVISE_FOR_RE = re.compile(r"^devise_for\s+:?(?P<name>[A-Za-z_]\w*)(?P<args>.*)$", re.IGNORECASE)
 RAILS_WORDS_LOOP_RE = re.compile(
     r"^%(?:w|i)\[(?P<values>[^\]]+)\]\.(?:each|each_with_index)\s+do\s+\|(?P<vars>[^|]+)\|"
+)
+RAILS_ENGINE_DRAW_RE = re.compile(r"^(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\.routes\.draw\s+do$")
+RAILS_ENGINE_MOUNT_RE = re.compile(
+    r"\bmount\s+(?P<engine>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::Engine\s*,\s*at:\s*['\"](?P<path>[^'\"]+)['\"]"
 )
 PHOENIX_ROUTE_RE = re.compile(
     r"^\s*(?P<method>get|post|put|patch|delete)\s*\(?\s*['\"](?P<path>/[^'\"]*)['\"]\s*,\s*"
@@ -7298,11 +7305,15 @@ def _sinatra_response_type(window: str) -> str | None:
 
 def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]:
     normalized = file_fact.path.replace("\\", "/").lower()
-    if normalized != "config/routes.rb" and not (
-        normalized.startswith("config/routes/") and normalized.endswith(".rb")
+    if (
+        normalized != "config/routes.rb"
+        and not normalized.endswith("/config/routes.rb")
+        and not (normalized.startswith("config/routes/") and normalized.endswith(".rb"))
+        and not ("/config/routes/" in normalized and normalized.endswith(".rb"))
     ):
         return []
     source = _read(root, file_fact)
+    engine_mounts = _rails_engine_mount_prefixes(str(root))
     routes: list[ApiRouteFact] = []
     stack: list[dict[str, object]] = []
     lines = source.splitlines(keepends=True)
@@ -7322,6 +7333,12 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
         base_collection = str(stack[-1]["collection"]) if stack else ""
         base_member = str(stack[-1]["member"]) if stack else ""
 
+        if engine_draw := RAILS_ENGINE_DRAW_RE.match(stripped):
+            mount_prefix = engine_mounts.get(engine_draw.group("engine"))
+            if mount_prefix:
+                stack.append({"indent": indent, "collection": mount_prefix, "member": mount_prefix, "name": ""})
+            continue
+
         if words_loop := RAILS_WORDS_LOOP_RE.match(stripped):
             variable_names = [part.strip() for part in words_loop.group("vars").split(",") if part.strip()]
             loop_variable = variable_names[0] if variable_names else ""
@@ -7334,6 +7351,19 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                         "member": base_member,
                         "name": stack[-1]["name"] if stack else "",
                         "vars": {loop_variable: values},
+                    }
+                )
+            continue
+
+        if scope_module_path_match := RAILS_SCOPE_MODULE_PATH_RE.match(stripped):
+            path = _join_paths(base_member or base_collection, scope_module_path_match.group("path"))
+            if stripped.endswith("do"):
+                stack.append(
+                    {
+                        "indent": indent,
+                        "collection": path,
+                        "member": path,
+                        "name": scope_module_path_match.group("path"),
                     }
                 )
             continue
@@ -7498,6 +7528,30 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
                     )
                 )
     return _dedupe_routes(routes)
+
+
+@lru_cache(maxsize=32)
+def _rails_engine_mount_prefixes(root_text: str) -> dict[str, str]:
+    root = Path(root_text)
+    prefixes: dict[str, str] = {}
+    for path in root.rglob("*.rb"):
+        relative = path.relative_to(root).as_posix()
+        lowered = relative.lower()
+        if "/.git/" in f"/{lowered}/" or "/node_modules/" in f"/{lowered}/" or "/vendor/bundle/" in f"/{lowered}/":
+            continue
+        if not (
+            lowered.endswith("plugin.rb")
+            or lowered.endswith("config/routes.rb")
+            or "/config/routes/" in f"/{lowered}"
+        ):
+            continue
+        try:
+            source = path.read_text(encoding="utf-8-sig", errors="ignore")
+        except OSError:
+            continue
+        for match in RAILS_ENGINE_MOUNT_RE.finditer(source):
+            prefixes[match.group("engine")] = _ensure_slash(match.group("path"))
+    return prefixes
 
 
 def _rails_resource_routes(
