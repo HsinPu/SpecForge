@@ -7422,7 +7422,8 @@ def _extract_rails_routes(root: Path, file_fact: FileFact) -> list[ApiRouteFact]
             name = resource_match.group("name")
             args = resource_match.group("args") or ""
             is_singular = resource_match.group("kind") == "resource"
-            collection_path = _join_paths(base_member, name)
+            path_name = _rails_resource_path_name(name, args)
+            collection_path = _join_paths(base_member, path_name)
             member_param = _first_match(args, r"param:\s+:([A-Za-z_]\w*)") or "id"
             member_path = collection_path if is_singular else _join_paths(collection_path, f"{{{member_param}}}")
             routes.extend(
@@ -7560,6 +7561,10 @@ def _rails_resource_action_routes(
 
 def _rails_resource_controller(name: str, args: str) -> str:
     return _rails_option_value(args, "controller") or name
+
+
+def _rails_resource_path_name(name: str, args: str) -> str:
+    return (_rails_option_value(args, "path") or name).strip("/")
 
 
 def _rails_devise_for_routes(
